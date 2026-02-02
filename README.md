@@ -39,15 +39,23 @@ Required for local model inference and image analysis.
 
 ### 3. AnythingLLM (RAG & Chat Backend)
 Required for the chat interface and vector database management.
-1. Install via Docker:
+1. Install via Docker (MacOS/Linux):
    ```bash
+   export STORAGE_LOCATION="$HOME/anythingllm"
+   mkdir -p "$STORAGE_LOCATION"
+   touch "$STORAGE_LOCATION/.env"
+   
    docker run -d -p 3001:3001 \
    --cap-add SYS_ADMIN \
-   -v ${PWD}/storage:/app/server/storage \
-   -v ${PWD}/.env:/app/server/.env \
+   --name anythingllm \
+   --restart always \
+   -v "$STORAGE_LOCATION:/app/server/storage" \
+   -v "$STORAGE_LOCATION/.env:/app/server/.env" \
    -e STORAGE_DIR="/app/server/storage" \
+   -e SERVER_WORKERS=5 \
    mintplexlabs/anythingllm
    ```
+   *(For Windows instructions, see `USER_MANUAL.md`)*
 2. **Initial Setup**:
    - Access `http://localhost:3001`.
    - Complete the onboarding.

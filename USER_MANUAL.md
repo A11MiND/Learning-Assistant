@@ -30,11 +30,48 @@ Docker is required if you plan to use containerized services like AnythingLLM.
 
 #### ANYTHING LLM INSTALLATION
 AnythingLLM provides a powerful backend for document embedding and RAG (Retrieval-Augmented Generation).
-1.  Open your terminal.
-2.  Run the following command to pull and start the AnythingLLM docker container:
-    ```bash
-    docker run -d -p 3001:3001 --cap-add SYS_ADMIN --name anythingllm mintplexlabs/anythingllm
-    ```
+
+**1. Pull the Docker Image**
+```bash
+docker pull mintplexlabs/anythingllm:latest
+```
+
+**2. Setup Persistent Storage & Run Container**
+
+**For Linux / macOS:**
+```bash
+export STORAGE_LOCATION="$HOME/anythingllm"
+mkdir -p "$STORAGE_LOCATION"
+touch "$STORAGE_LOCATION/.env"
+
+docker run -d -p 3001:3001 \
+  --cap-add SYS_ADMIN \
+  --name anythingllm \
+  --restart always \
+  -v "$STORAGE_LOCATION:/app/server/storage" \
+  -v "$STORAGE_LOCATION/.env:/app/server/.env" \
+  -e STORAGE_DIR="/app/server/storage" \
+  -e SERVER_WORKERS=5 \
+  mintplexlabs/anythingllm
+```
+
+**For Windows (PowerShell):**
+```powershell
+$env:STORAGE_LOCATION="$HOME\Documents\anythingllm"
+If(!(Test-Path $env:STORAGE_LOCATION)) {New-Item $env:STORAGE_LOCATION -ItemType Directory}
+If(!(Test-Path "$env:STORAGE_LOCATION\.env")) {New-Item "$env:STORAGE_LOCATION\.env" -ItemType File}
+
+docker run -d -p 3001:3001 `
+  --cap-add SYS_ADMIN `
+  --name anythingllm `
+  --restart always `
+  -v "$env:STORAGE_LOCATION`:/app/server/storage" `
+  -v "$env:STORAGE_LOCATION`\.env`:/app/server/.env" `
+  -e STORAGE_DIR="/app/server/storage" `
+  -e SERVER_WORKERS=5 `
+  mintplexlabs/anythingllm
+```
+
 3.  Access the interface at `http://localhost:3001` to complete the setup.
 
 #### PLATFORM INSTALLATION (GITHUB)
