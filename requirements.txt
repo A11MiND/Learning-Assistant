@@ -144,71 +144,9 @@ libarchive-c @ file:///tmp/build/80754af9/python-libarchive-c_1617780486945/work
 libmambapy @ file:///private/var/folders/nz/j6p8yfhx1mv_0grj5xl4650h0000gp/T/abs_8b8wjifot8/croot/mamba-split_1714483537242/work/libmambapy
 linkify-it-py @ file:///private/var/folders/nz/j6p8yfhx1mv_0grj5xl4650h0000gp/T/abs_dfx0uefan1/croots/recipe/linkify-it-py_1659783370399/work
 litellm==1.67.2
-llama-index-core==0.14.13
-llama-index-embeddings-openai==0.5.1
-llama-index-instrumentation==0.4.2
-llama-index-readers-file==0.5.6
-llama-index-workflows==2.12.2
-llama_cpp_python==0.3.8
-llvmlite @ file:///private/var/folders/k1/30mswbxs7r1g6zwn8y4fyt500000gp/T/abs_22a8mvi_vz/croot/llvmlite_1720455324093/work
-lmdb @ file:///private/var/folders/nz/j6p8yfhx1mv_0grj5xl4650h0000gp/T/abs_6fumkuh_c0/croot/python-lmdb_1682522347231/work
-locket @ file:///private/var/folders/nz/j6p8yfhx1mv_0grj5xl4650h0000gp/T/abs_cb58d7ee-eabb-4e31-8a7c-68bb73b3bb2e3lthxgi7/croots/recipe/locket_1652903118916/work
-lxml==5.2.2
-lz4 @ file:///private/var/folders/nz/j6p8yfhx1mv_0grj5xl4650h0000gp/T/abs_f0mtitgo6y/croot/lz4_1686063770247/work
-Mako==1.3.10
-Markdown @ file:///private/var/folders/nz/j6p8yfhx1mv_0grj5xl4650h0000gp/T/abs_160njdxnjs/croot/markdown_1671541913695/work
-markdown-it-py @ file:///private/var/folders/nz/j6p8yfhx1mv_0grj5xl4650h0000gp/T/abs_43l_4ajkho/croot/markdown-it-py_1684279912406/work
-marker-pdf==0.2.17
-MarkupSafe==3.0.2
-marshmallow==3.26.2
-matplotlib==3.9.4
-matplotlib-inline @ file:///private/var/folders/nz/j6p8yfhx1mv_0grj5xl4650h0000gp/T/abs_f6fdc0hldi/croots/recipe/matplotlib-inline_1662014472341/work
-mccabe==0.6.1
-mdit-py-plugins @ file:///private/var/folders/nz/j6p8yfhx1mv_0grj5xl4650h0000gp/T/abs_20w4yvcz8v/croots/recipe/mdit-py-plugins_1659721249084/work
-mdurl @ file:///private/var/folders/nz/j6p8yfhx1mv_0grj5xl4650h0000gp/T/abs_0a8xm6w4wv/croots/recipe/mdurl_1659716035810/work
-menuinst @ file:///private/var/folders/k1/30mswbxs7r1g6zwn8y4fyt500000gp/T/abs_ad321a45td/croot/menuinst_1723567614652/work
-mistune @ file:///private/var/folders/nz/j6p8yfhx1mv_0grj5xl4650h0000gp/T/abs_17ya6k1sbs/croots/recipe/mistune_1661496228719/work
-mmh3==5.1.0
-modelscope==1.25.0
-monotonic==1.6
-more-itertools @ file:///private/var/folders/k1/30mswbxs7r1g6zwn8y4fyt500000gp/T/abs_1di4owdn65/croot/more-itertools_1727185454223/work
-mpmath @ file:///private/var/folders/k1/30mswbxs7r1g6zwn8y4fyt500000gp/T/abs_17iu6a8a3m/croot/mpmath_1690848269369/work
-msgpack @ file:///private/var/folders/nz/j6p8yfhx1mv_0grj5xl4650h0000gp/T/abs_b1f960af-3408-459c-81e6-6c3b55c6bc85wsdgof__/croots/recipe/msgpack-python_1652362662498/work
-multidict @ file:///private/var/folders/nz/j6p8yfhx1mv_0grj5xl4650h0000gp/T/abs_10voz9m15i/croot/multidict_1701096890858/work
-multipledispatch @ file:///Users/ktietz/demo/mc3/conda-bld/multipledispatch_1629282739158/work
-mypy @ file:///private/var/folders/nz/j6p8yfhx1mv_0grj5xl4650h0000gp/T/abs_fdoskmy3x7/croot/mypy-split_1725573898279/work
-mypy-extensions @ file:///private/var/folders/k1/30mswbxs7r1g6zwn8y4fyt500000gp/T/abs_98zqpuwvro/croot/mypy_extensions_1695130957675/work
-navigator-updater @ file:///private/var/folders/k1/30mswbxs7r1g6zwn8y4fyt500000gp/T/abs_15xz58jgev/croot/navigator-updater_1718030392983/work
-nbclient @ file:///private/var/folders/nz/j6p8yfhx1mv_0grj5xl4650h0000gp/T/abs_626hpwnurm/croot/nbclient_1698934218848/work
-nbconvert @ file:///private/var/folders/nz/j6p8yfhx1mv_0grj5xl4650h0000gp/T/abs_f4c1s1qk1f/croot/nbconvert_1728049432295/work
-nbformat @ file:///private/var/folders/nz/j6p8yfhx1mv_0grj5xl4650h0000gp/T/abs_2cv_qoc1gw/croot/nbformat_1728049423516/work
-nest-asyncio @ file:///private/var/folders/k1/30mswbxs7r1g6zwn8y4fyt500000gp/T/abs_310vb5e2a0/croot/nest-asyncio_1708532678212/work
-networkx @ file:///private/var/folders/nz/j6p8yfhx1mv_0grj5xl4650h0000gp/T/abs_797xfkx_y7/croot/networkx_1717597499877/work
-nltk @ file:///private/var/folders/k1/30mswbxs7r1g6zwn8y4fyt500000gp/T/abs_66jwomcxtp/croot/nltk_1724427705781/work
-nonebot==1.8.0
-notebook @ file:///private/var/folders/k1/30mswbxs7r1g6zwn8y4fyt500000gp/T/abs_539v4hufo2/croot/notebook_1727199149603/work
-notebook_shim @ file:///private/var/folders/nz/j6p8yfhx1mv_0grj5xl4650h0000gp/T/abs_d6_ze10f45/croot/notebook-shim_1699455897525/work
-numba @ file:///private/var/folders/k1/30mswbxs7r1g6zwn8y4fyt500000gp/T/abs_adaws2bya8/croot/numba_1720607446395/work
-numexpr @ file:///private/var/folders/k1/30mswbxs7r1g6zwn8y4fyt500000gp/T/abs_45yefq0kt6/croot/numexpr_1696515289183/work
-numpy==1.26.4
-numpydoc @ file:///private/var/folders/k1/30mswbxs7r1g6zwn8y4fyt500000gp/T/abs_69xghc3i3n/croot/numpydoc_1718279166747/work
-nvidia-ml-py==12.570.86
-oauthlib==3.2.2
-ollama==0.6.0
-onnxruntime==1.19.2
-openai==2.15.0
-opencv-python==4.11.0.86
-openpyxl @ file:///private/var/folders/nz/j6p8yfhx1mv_0grj5xl4650h0000gp/T/abs_96hhik4ygv/croot/openpyxl_1721752931204/work
-opentelemetry-api==1.31.1
-opentelemetry-exporter-otlp-proto-common==1.31.1
-opentelemetry-exporter-otlp-proto-grpc==1.31.1
-opentelemetry-instrumentation==0.52b1
-opentelemetry-instrumentation-asgi==0.52b1
-opentelemetry-instrumentation-fastapi==0.52b1
-opentelemetry-proto==1.31.1
-opentelemetry-sdk==1.31.1
-opentelemetry-semantic-conventions==0.52b1
-opentelemetry-util-http==0.52b1
+streamlit>=1.0
+requests>=2.0
+
 orjson==3.10.16
 outcome==1.3.0.post0
 overrides @ file:///private/var/folders/k1/30mswbxs7r1g6zwn8y4fyt500000gp/T/abs_70s80guh9g/croot/overrides_1699371144462/work
