@@ -2,6 +2,15 @@ venv/
 __pycache__/
 *.pyc
 .DS_Store
+data/
+.env
+/.streamlit/
+*.sqlite3
+*.db
+venv/
+__pycache__/
+*.pyc
+.DS_Store
 dse_ai.db
 data/
 history/
