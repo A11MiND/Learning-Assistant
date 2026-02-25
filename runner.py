@@ -8,6 +8,24 @@ import socket
 from datetime import datetime
 import database
 
+# helper similar to main app
+
+def call_model_api(model, user_input):
+    prompt = user_input
+    if model.get("system_prompt"):
+        prompt = model["system_prompt"] + "\n\n" + user_input
+    headers = {"Content-Type": "application/json"}
+    if model.get("api_key"):
+        headers["Authorization"] = f"Bearer {model['api_key']}"
+    payload = {"prompt": prompt}
+    try:
+        resp = requests.post(model["api_url"], json=payload, headers=headers, timeout=60)
+        resp.raise_for_status()
+        data = resp.json()
+        return data.get("response") or data.get("output") or data.get("text") or str(data)
+    except Exception as e:
+        return f"[Model Error]: {e}"
+
 # --- Constants ---
 DATA_DIR = "data"
 
@@ -198,15 +216,30 @@ config = load_config(username)
 
 # App Config
 app_title = config.get("app_title", f"{user['name']}'s AI Tutor")
-st.set_page_config(page_title=app_title, page_icon="🎓", layout="wide")
+st.set_page_config(page_title=app_title, layout="wide")
 
 # --- UI ---
-st.title(f"🎓 {app_title}")
+st.title(app_title)
 
-# Sidebar (History)
+# Sidebar (History + model selector)
 with st.sidebar:
-    st.header("💬 Chat History")
-    if st.button("➕ New Chat", use_container_width=True):
+    # model selector: show only allowed models for this student
+    allowed_models = database.get_allowed_models_for_student(user['id'])
+    if allowed_models:
+        sel = config.get('model_id')
+        options = {m['id']: m['name'] for m in allowed_models}
+        idx = 0
+        if sel in options:
+            idx = list(options.keys()).index(sel)
+        choice = st.selectbox("Model", options.keys(), format_func=lambda i: options[i], index=idx)
+        if choice != sel:
+            config['model_id'] = choice
+            save_config(username, config)
+    else:
+        st.write("No models assigned by teacher.")
+    
+    st.header("Chat History")
+    if st.button("New Chat", use_container_width=True):
         st.session_state.messages = []
         st.session_state.session_id = str(uuid.uuid4())
         st.rerun()
@@ -232,13 +265,13 @@ with st.sidebar:
             with col1:
                 # Truncate title for button
                 btn_title = title if len(title) < 20 else title[:17] + "..."
-                if st.button(f"📄 {btn_title}", key=f"open_{sid}", use_container_width=True, help=title):
+                if st.button(f"{btn_title}", key=f"open_{sid}", use_container_width=True, help=title):
                     msgs, _ = load_session(username, sid)
                     st.session_state.messages = msgs
                     st.session_state.session_id = sid
                     st.rerun()
             with col2:
-                if st.button("🗑️", key=f"del_{sid}"):
+                if st.button("Delete", key=f"del_{sid}"):
                     delete_session(username, sid)
                     if st.session_state.get('session_id') == sid:
                         st.session_state.messages = []
@@ -246,7 +279,7 @@ with st.sidebar:
                     st.rerun()
 
 # Tabs
-tab_chat, tab_practice, tab_notebook = st.tabs(["💬 Chat", "📝 Practice", "📓 Notebook"])
+tab_chat, tab_practice, tab_notebook = st.tabs(["Chat", "Practice", "Notebook"])
 
 with tab_chat:
     # Chat Logic
@@ -265,14 +298,7 @@ with tab_chat:
             elif "image" in msg: # Temporary session image (fallback)
                 st.image(msg["image"], width=300)
             elif msg.get("has_image"): # Old fallback
-                st.caption("🖼️ [Image from history]")
-
-    with st.popover("📎", help="Attach Image"):
-        uploaded_file = st.file_uploader("Upload Image", type=["jpg", "png", "jpeg"], label_visibility="collapsed")
-
-    if uploaded_file:
-        with st.expander("🖼️ Image Attached", expanded=True):
-            st.image(uploaded_file, width=150)
+                st.caption("[Image from history]")
 
     user_input = st.chat_input("Ask your AI Tutor...")
 
@@ -295,36 +321,27 @@ with tab_chat:
         
         # AI Response
         response_text = ""
-        
+        # determine model from config
+        model = None
+        if config.get('model_id'):
+            models = database.get_models()
+            for m in models:
+                if m['id'] == config['model_id']:
+                    model = m
+                    break
+        if not model:
+            # fallback first model
+            ms = database.get_models()
+            model = ms[0] if ms else None
         if uploaded_file:
-            # VLM + RAG Logic
-            with st.spinner("👀 Analyzing Image (Ollama)..."):
-                image_bytes = uploaded_file.getvalue()
-                desc_prompt = "Describe this image in detail. If it contains text or math, transcribe it exactly."
-                img_desc = call_ollama_vision(
-                    config.get("ollama_url", DEFAULT_OLLAMA_URL),
-                    config.get("ollama_model", "qwen3-vl:8b"),
-                    image_bytes,
-                    desc_prompt
-                )
-            
-            with st.spinner("🧠 Thinking (AnythingLLM)..."):
-                rag_prompt = f"The user uploaded an image with this description:\n{img_desc}\n\nUser Question: {user_input}\n\nPlease answer the user's question based on the image description."
-                response_text = call_anythingllm_chat(
-                    config.get("url", DEFAULT_ANY_LLM_URL),
-                    config.get("api_key", ""),
-                    config.get("slug", "default"),
-                    rag_prompt
-                )
+            # legacy image support: prepend description
+            image_bytes = uploaded_file.getvalue()
+            desc_prompt = "Describe this image in detail."
+            img_desc = call_model_api(model, desc_prompt) if model else ""
+            rag_prompt = f"Image description: {img_desc}\nUser question: {user_input}"
+            response_text = call_model_api(model, rag_prompt) if model else "[No model configured]"
         else:
-            # Text Only
-             with st.spinner("🧠 Thinking (AnythingLLM)..."):
-                response_text = call_anythingllm_chat(
-                    config.get("url", DEFAULT_ANY_LLM_URL),
-                    config.get("api_key", ""),
-                    config.get("slug", "default"),
-                    user_input
-                )
+            response_text = call_model_api(model, user_input) if model else "[No model configured]"
         
         with st.chat_message("assistant"):
             st.markdown(response_text)
@@ -339,8 +356,8 @@ with tab_chat:
     # Add to Notebook Button (outside the loop, checks state)
     if "last_qa" in st.session_state:
         q, a = st.session_state.last_qa
-        if st.button("📝 Add Last Q&A to Notebook"):
-            with st.spinner("🧠 Analyzing mistake and summarizing..."):
+        if st.button("Add Last Q&A to Notebook"):
+            with st.spinner("Analyzing mistake and summarizing..."):
                 summary_prompt = f"Analyze this student's question and the answer. Summarize the key mistake the student might have made or the key concept they need to remember. Be concise.\n\nQuestion: {q}\nAnswer: {a}"
                 summary = call_anythingllm_chat(
                     config.get("url", DEFAULT_ANY_LLM_URL),
@@ -353,7 +370,7 @@ with tab_chat:
             del st.session_state.last_qa # Clear after adding
 
 with tab_practice:
-    st.header("📝 Generate Practice Questions")
+    st.header("Generate Practice Questions")
     st.write("Select topics from your notebook to generate questions.")
     
     notebook = load_notebook(username)
@@ -388,7 +405,7 @@ with tab_practice:
                     st.markdown(questions)
 
 with tab_notebook:
-    st.header("📓 Your Notebook")
+    st.header("Your Notebook")
     
     notebook = load_notebook(username)
     if not notebook:
@@ -414,7 +431,7 @@ with tab_notebook:
                 st.markdown("**💡 Key Learning / Summary**")
                 st.warning(entry['summary'])
                 
-                if st.button("🗑️ Delete Entry", key=f"del_note_{entry['id']}"):
+                if st.button("Delete Entry", key=f"del_note_{entry['id']}"):
                     delete_notebook_entry(username, entry['id'])
                     st.rerun()
 

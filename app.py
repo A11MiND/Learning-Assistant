@@ -11,6 +11,26 @@ import socket
 import time
 import database
 
+# ---- model API helper ----
+def call_model_api(model, user_input):
+    """Send a request to the configured model with system prompt."""
+    # model is dict with keys: api_url, api_key, system_prompt
+    prompt = user_input
+    if model.get("system_prompt"):
+        prompt = model["system_prompt"] + "\n\n" + user_input
+    headers = {"Content-Type": "application/json"}
+    if model.get("api_key"):
+        headers["Authorization"] = f"Bearer {model['api_key']}"
+    payload = {"prompt": prompt}
+    try:
+        resp = requests.post(model["api_url"], json=payload, headers=headers, timeout=60)
+        resp.raise_for_status()
+        data = resp.json()
+        # support common keys
+        return data.get("response") or data.get("output") or data.get("text") or str(data)
+    except Exception as e:
+        return f"[Model Error]: {e}"
+
 # --- Helper Functions ---
 
 def get_local_ip():
@@ -51,7 +71,7 @@ def save_system_settings(settings):
 database.init_db()
 database.cleanup_zombies() # Cleanup on startup
 
-st.set_page_config(page_title="DSE AI Tutor Platform", page_icon="🎓", layout="wide")
+st.set_page_config(page_title="DSE AI Tutor Platform", layout="wide")
 
 # Apply System Customization (CSS) if exists
 sys_settings = load_system_settings()
@@ -156,7 +176,7 @@ def render_login():
     if sys_settings.get("logo_url"):
         st.image(sys_settings.get("logo_url"), width=200)
     
-    title = sys_settings.get("school_name", "🔐 DSE AI Learner Login")
+    title = sys_settings.get("school_name", "DSE AI Learner Login")
     st.title(title)
     
     tab1, tab2 = st.tabs(["Login", "Register"])
@@ -168,7 +188,7 @@ def render_login():
             user = database.verify_user(username, password)
             if user:
                 if user.get('account_status') == 'banned':
-                    st.error("🚫 This account has been suspended.")
+                    st.error("This account has been suspended.")
                 else:
                     st.session_state.user = user
                     st.success(f"Welcome, {user['name']}!")
@@ -187,7 +207,7 @@ def render_login():
                 st.error("Username already exists.")
 
 def render_profile(user):
-    st.header("👤 User Profile")
+    st.header("User Profile")
     
     with st.form("profile_form"):
         new_name = st.text_input("Display Name", value=user['name'])
@@ -207,9 +227,9 @@ def render_profile(user):
                 st.error(msg)
 
 def render_teacher_dashboard():
-    st.title("👨‍🏫 Teacher Dashboard")
+    st.title("Teacher Dashboard")
     
-    tab_students, tab_system = st.tabs(["👥 Student Management", "⚙️ System Customization"])
+    tab_students, tab_models, tab_system = st.tabs(["Student Management", "Model Management", "System Customization"])
     
     with tab_students:
         if st.button("Refresh List"):
@@ -226,6 +246,9 @@ def render_teacher_dashboard():
         cols[4].markdown("**Acc Status**")
         cols[5].markdown("**Actions**")
         
+        # Pre-fetch all models for access checkboxes
+        all_models = database.get_models()
+        
         for s in students:
             with st.container():
                 cols = st.columns([1, 2, 2, 1.5, 1.5, 4])
@@ -235,59 +258,56 @@ def render_teacher_dashboard():
                 
                 # App Status
                 dep = database.get_deployment(s['id'])
-                app_status = "🔴 Stopped"
+                app_status = "Stopped"
                 app_url = ""
                 is_running = False
                 if dep and dep['status'] == 'running':
                     try:
                         os.kill(dep['pid'], 0)
-                        app_status = f"🟢 (: {dep['port']})"
+                        app_status = f"Running (port {dep['port']})"
                         app_url = f"http://{SERVER_IP}:{dep['port']}"
                         is_running = True
                     except:
-                        app_status = "⚠️ Zombie"
+                        app_status = "Zombie"
                 cols[3].write(app_status)
                 
                 # Account Status
                 acc_status = s.get('account_status', 'active')
                 if acc_status == 'banned':
-                    cols[4].markdown("🔴 **BANNED**")
+                    cols[4].markdown("BANNED")
                 else:
-                    cols[4].markdown("🟢 Active")
+                    cols[4].markdown("Active")
                 
                 # Actions
                 with cols[5]:
-                    # Row 1: App Control & Ban - ONE LINE
-                    # Adjust ratio to fit buttons tightly
                     sub_cols = st.columns([1.2, 1.2, 1.2], gap="small")
                     
                     with sub_cols[0]:
                         if is_running:
-                            if st.button("⏹️ Stop", key=f"stop_{s['id']}", use_container_width=True):
+                            if st.button("Stop", key=f"stop_{s['id']}"):
                                 stop_student_app(s['id'])
                                 st.rerun()
                         else:
-                            if st.button("▶️ Run", key=f"run_{s['id']}", use_container_width=True):
+                            if st.button("Run", key=f"run_{s['id']}"):
                                  start_student_app(s['id'], s['username'])
                                  st.rerun()
                     with sub_cols[1]:
                         if app_url:
-                            st.link_button("🔗 Open", app_url, use_container_width=True)
+                            st.write(f"[Open]({app_url})")
                         else:
-                             st.button("🔗 Open", key=f"dis_{s['id']}", disabled=True, use_container_width=True)
+                             st.write("-")
                     with sub_cols[2]:
                         if acc_status == 'banned':
-                            if st.button("🔓 Unban", key=f"unban_{s['id']}", use_container_width=True):
+                            if st.button("Unban", key=f"unban_{s['id']}"):
                                 database.update_user_status(s['id'], 'active')
                                 st.rerun()
                         else:
-                            if st.button("🚫 Ban", key=f"ban_{s['id']}", use_container_width=True):
+                            if st.button("Ban", key=f"ban_{s['id']}"):
                                 database.update_user_status(s['id'], 'banned')
-                                stop_student_app(s['id']) # Stop app if banned
+                                stop_student_app(s['id'])
                                 st.rerun()
                     
-                    # Row 2: Edit & Delete
-                    with st.expander("⚙️ Edit / Delete"):
+                    with st.expander("Edit / Delete"):
                         with st.form(key=f"edit_form_{s['id']}"):
                             new_name = st.text_input("Name", value=s['name'])
                             new_user = st.text_input("Username", value=s['username'])
@@ -295,7 +315,7 @@ def render_teacher_dashboard():
                             
                             col_a, col_b = st.columns(2)
                             with col_a:
-                                if st.form_submit_button("💾 Save Changes", use_container_width=True):
+                                if st.form_submit_button("Save Changes"):
                                     pw = "password" if reset_pw else None
                                     success, msg = database.admin_update_user(s['id'], new_name, new_user, pw)
                                     if success:
@@ -305,13 +325,64 @@ def render_teacher_dashboard():
                                     else:
                                         st.error(msg)
                             with col_b:
-                                if st.form_submit_button("🗑️ Delete User", type="primary", use_container_width=True):
+                                if st.form_submit_button("Delete User", type="primary"):
                                     database.delete_user(s['id'])
                                     st.rerun()
+                # Model access section
+                with st.expander("Model Access"):
+                    allowed = {m['id'] for m in database.get_allowed_models_for_student(s['id'])}
+                    for m in all_models:
+                        checked = m['id'] in allowed
+                        new_val = st.checkbox(m['name'], value=checked, key=f"access_{s['id']}_{m['id']}")
+                        if new_val != checked:
+                            database.set_student_model_access(s['id'], m['id'], 1 if new_val else 0)
+                            st.rerun()
                 st.divider()
 
+    with tab_models:
+        st.header("Model Management")
+        st.info("Add, edit or remove large language models and their system prompts.")
+        
+        # list existing models
+        models = database.get_models()
+        if models:
+            for m in models:
+                with st.expander(f"{m['name']} (ID {m['id']})"):
+                    with st.form(key=f"edit_model_{m['id']}"):
+                        name = st.text_input("Display Name", value=m['name'])
+                        url = st.text_input("API URL", value=m['api_url'])
+                        key = st.text_input("API Key", value=m.get('api_key',''))
+                        prompt = st.text_area("System Prompt", value=m.get('system_prompt',''))
+                        col_a, col_b = st.columns(2)
+                        with col_a:
+                            if st.form_submit_button("Save Changes"):
+                                database.update_model(m['id'], name=name, api_url=url, api_key=key or None, system_prompt=prompt or None)
+                                st.success("Updated")
+                                st.experimental_rerun()
+                        with col_b:
+                            if st.form_submit_button("Delete Model", type="primary"):
+                                database.delete_model(m['id'])
+                                st.experimental_rerun()
+        else:
+            st.write("No models defined yet.")
+        
+        st.markdown("---")
+        st.subheader("Add New Model")
+        with st.form("add_model"):
+            name = st.text_input("Display Name")
+            url = st.text_input("API URL")
+            key = st.text_input("API Key (optional)")
+            prompt = st.text_area("System Prompt (optional)")
+            if st.form_submit_button("Create Model"):
+                if name and url:
+                    database.create_model(name, url, api_key=key or None, system_prompt=prompt or None)
+                    st.success("Model created")
+                    st.experimental_rerun()
+                else:
+                    st.error("Name and URL are required")
+    
     with tab_system:
-        st.header("🎨 System Customization")
+        st.header("System Customization")
         st.info("Customize the login page branding for your school.")
         
         sys_settings = load_system_settings()
@@ -322,7 +393,7 @@ def render_teacher_dashboard():
             # Or upload logic could be added here but simple URL or local path is easier for now
             bg_url = st.text_input("Background Image URL", value=sys_settings.get("background_url", ""), help="Enter a URL for the login page background.")
             
-            if st.form_submit_button("💾 Save Branding"):
+            if st.form_submit_button("Save Branding"):
                 new_settings = {
                     "school_name": school_name,
                     "logo_url": logo_url,
@@ -334,82 +405,126 @@ def render_student_workspace(user):
     username = user['username']
     config = load_config(username)
     
-    st.sidebar.title(f"🎓 {user['name']}")
+    st.sidebar.title(f"{user['name']}")
     
-    # Enhanced Menu UI
+    # Menu UI (simplified: chat & notebook & profile)
     st.sidebar.markdown("---")
     menu = st.sidebar.radio(
         "Navigation", 
-        ["🛠️ App Designer", "🚀 Publish & Run", "👤 Profile"],
+        ["Chat", "Notebook", "Profile"],
         index=0,
         label_visibility="collapsed"
     )
     st.sidebar.markdown("---")
     
-    if menu == "👤 Profile":
+    # model selection dropdown for students
+    allowed_models = database.get_allowed_models_for_student(user['id'])
+    if allowed_models:
+        sel = config.get('model_id')
+        options = {m['id']: m['name'] for m in allowed_models}
+        chosen = st.sidebar.selectbox("Model", options.keys(), format_func=lambda i: options[i], index=list(options.keys()).index(sel) if sel in options else 0)
+        config['model_id'] = chosen
+        save_config(username, config)
+    else:
+        st.sidebar.write("No models available")
+    
+    if menu == "Profile":
         render_profile(user)
-        
-    elif menu == "🛠️ App Designer":
-        st.header("🛠️ Design Your AI Tutor")
-        
-        # Config Form
-        with st.form("app_config"):
-            app_title = st.text_input("App Title", value=config.get("app_title", "My AI Tutor"))
-            system_prompt = st.text_area("System Prompt", value=config.get("system_prompt", "You are a helpful tutor."))
-            
-            st.markdown("### 🤖 AI Backend Settings")
-            
-            # Ollama Settings
-            col1, col2 = st.columns([3, 1])
-            with col1:
-                ollama_url = st.text_input("Ollama URL", value=config.get("ollama_url", DEFAULT_OLLAMA_URL))
-            with col2:
-                # Dynamic Model Loading
-                st.write("") # Spacer
-                st.write("") # Spacer
-                if st.form_submit_button("🔄 Load Models"):
-                    try:
-                        res = requests.get(f"{ollama_url}/api/tags", timeout=2)
-                        if res.status_code == 200:
-                            models = [m['name'] for m in res.json()['models']]
-                            st.session_state['ollama_models'] = models
-                            st.toast("Models Loaded!", icon="✅")
-                        else:
-                            st.toast("Failed to load models", icon="❌")
-                    except Exception as e:
-                        st.toast(f"Error: {e}", icon="❌")
-            
-            model_options = st.session_state.get('ollama_models', [config.get("ollama_model", "qwen3-vl:8b")])
-            ollama_model = st.selectbox("Select Ollama Model", model_options, index=0 if model_options else None)
-            
-            st.divider()
-            
-            # AnythingLLM Settings
-            allm_url = st.text_input("AnythingLLM URL", value=config.get("url", DEFAULT_ANYTHINGLLM_URL))
-            allm_key = st.text_input("AnythingLLM API Key", value=config.get("api_key", ""), type="password")
-            
-            if st.form_submit_button("🔍 Load Workspaces"):
-                 if not allm_key:
-                     st.warning("Please enter API Key first.")
-                 else:
-                    try:
-                        headers = {
-                            "Authorization": f"Bearer {allm_key}", 
-                            "accept": "application/json"
-                        }
-                        # Use correct endpoint to list workspaces
-                        res = requests.get(f"{allm_url}/workspaces", headers=headers, timeout=5)
-                        if res.status_code == 200:
-                             data = res.json()
-                             # Expecting {"workspaces": [{"slug": "...", "name": "..."}, ...]}
-                             workspaces = data.get("workspaces", [])
-                             slug_options = {w['slug']: f"{w['name']} ({w['slug']})" for w in workspaces}
-                             st.session_state['allm_workspaces'] = slug_options
-                             st.toast(f"Loaded {len(workspaces)} workspaces!", icon="✅")
-                        else:
-                             st.toast(f"Connection Failed: {res.status_code} - {res.text[:50]}", icon="⚠️")
-                    except Exception as e:
-                        st.toast(f"Error: {e}", icon="❌")
+    
+    elif menu == "Chat":
+        # Chat Logic
+        if "session_id" not in st.session_state:
+            st.session_state.session_id = str(uuid.uuid4())
+        if "messages" not in st.session_state:
+            st.session_state.messages = []
+
+        for msg in st.session_state.messages:
+            with st.chat_message(msg["role"]):
+                st.markdown(msg["content"])
+                if "image_path" in msg:
+                    img_path = get_image_path(username, msg["image_path"])
+                    if os.path.exists(img_path):
+                        st.image(img_path, width=300)
+                elif "image" in msg:
+                    st.image(msg["image"], width=300)
+                elif msg.get("has_image"):
+                    st.caption("[Image from history]")
+
+        with st.popover("Attach Image", help="Attach an image file"):
+            uploaded_file = st.file_uploader("Upload Image", type=["jpg", "png", "jpeg"], label_visibility="collapsed")
+
+        if uploaded_file:
+            with st.expander("Image Attached", expanded=True):
+                st.image(uploaded_file, width=150)
+
+        user_input = st.chat_input("Your message...")
+
+        if user_input:
+            with st.chat_message("user"):
+                st.markdown(user_input)
+                if uploaded_file:
+                    st.image(uploaded_file, width=300)
+            msg_data = {"role": "user", "content": user_input}
+            if uploaded_file:
+                image_bytes = uploaded_file.getvalue()
+                filename = save_image(username, image_bytes)
+                msg_data["image_path"] = filename
+            st.session_state.messages.append(msg_data)
+
+            # determine model
+            model = None
+            if config.get('model_id'):
+                models = database.get_models()
+                for m in models:
+                    if m['id'] == config['model_id']:
+                        model = m
+                        break
+            if not model and allowed_models:
+                model = allowed_models[0]
+
+            response_text = ""
+            if model:
+                response_text = call_model_api(model, user_input)
+            else:
+                response_text = "[No model available]"
+
+            with st.chat_message("assistant"):
+                st.markdown(response_text)
+            st.session_state.messages.append({"role": "assistant", "content": response_text})
+            save_session(username, st.session_state.session_id, st.session_state.messages)
+            st.session_state.last_qa = (user_input, response_text)
+            st.rerun()
+
+        if "last_qa" in st.session_state:
+            q, a = st.session_state.last_qa
+            if st.button("Add Last Q&A to Notebook"):
+                with st.spinner("Analyzing and summarizing..."):
+                    summary_prompt = f"Analyze this student's question and the answer. Summarize the key mistake or concept." \
+                                     f"\n\nQuestion: {q}\nAnswer: {a}"
+                    summary = call_model_api(model, summary_prompt) if model else ""
+                    add_to_notebook(username, q, a, summary)
+                st.success("Added to Notebook!")
+                del st.session_state.last_qa
+    
+    elif menu == "Notebook":
+        st.header("Your Notebook")
+        notebook = load_notebook(username)
+        if not notebook:
+            st.info("No entries yet.")
+        else:
+            notebook.sort(key=lambda x: x['timestamp'], reverse=True)
+            for entry in notebook:
+                with st.expander(f"{entry['title']} - {entry['timestamp'][:16]}"):
+                    st.write("**Question:**")
+                    st.write(entry['question'])
+                    st.write("**Answer:**")
+                    st.write(entry['answer'])
+                    if entry.get('summary'):
+                        st.write("**Summary:**")
+                        st.write(entry['summary'])
+                    if st.button("Delete", key=f"delete_note_{entry['id']}"):
+                        delete_notebook_entry(username, entry['id'])
+                        st.rerun()
 
             # Workspace selection dropdown
             workspace_options = st.session_state.get('allm_workspaces', {})
@@ -428,7 +543,7 @@ def render_student_workspace(user):
             allm_slug = selected_slug_key if selected_slug_key else st.text_input("Workspace Slug (Manual)", value=current_slug)
             
             st.markdown("---")
-            if st.form_submit_button("💾 Save Configuration", type="primary"):
+            if st.form_submit_button("Save Configuration", type="primary"):
                 new_config = {
                     "app_title": app_title,
                     "system_prompt": system_prompt,
@@ -441,36 +556,6 @@ def render_student_workspace(user):
                 save_config(username, new_config)
                 st.success("Configuration Saved!")
                 
-    elif menu == "🚀 Publish & Run":
-        st.header("🚀 Publish Your App")
-        st.info("Publishing your app will launch it on a dedicated port, accessible to others on the network.")
-        
-        dep = database.get_deployment(user['id'])
-        is_running = False
-        if dep and dep['status'] == 'running':
-            try:
-                os.kill(dep['pid'], 0)
-                is_running = True
-            except:
-                pass
-        
-        if is_running:
-            st.success(f"✅ App is Running!")
-            url = f"http://{SERVER_IP}:{dep['port']}"
-            st.markdown(f"### 🔗 [Click to Open App]({url})")
-            st.info("⚠️ Note: If URL not accessible, check if you are connected to the same network.")
-            st.code(url, language="text")
-            
-            if st.button("🛑 Stop App"):
-                stop_student_app(user['id'])
-                st.rerun()
-        else:
-            if st.button("▶️ Publish & Launch"):
-                with st.spinner("Launching your app..."):
-                    port = start_student_app(user['id'], username)
-                    st.success(f"App launched on port {port}!")
-                    time.sleep(1)
-                    st.rerun()
 
 # --- Main Entry ---
 
@@ -480,7 +565,7 @@ if "user" not in st.session_state:
 if st.session_state.user:
     # Sidebar Logout
     with st.sidebar:
-        if st.button("🚪 Logout"):
+        if st.button("Logout"):
             st.session_state.user = None
             st.rerun()
             

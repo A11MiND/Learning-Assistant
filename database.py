@@ -32,6 +32,30 @@ def init_db():
             FOREIGN KEY(user_id) REFERENCES users(id)
         )
     ''')
+
+    # Models table: teacher can register multiple LLM endpoints
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS models (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE NOT NULL,
+            api_url TEXT NOT NULL,
+            api_key TEXT,
+            system_prompt TEXT,
+            created_at TEXT
+        )
+    ''')
+
+    # Access table linking students to allowed models
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS student_model_access (
+            user_id INTEGER NOT NULL,
+            model_id INTEGER NOT NULL,
+            allowed INTEGER DEFAULT 1,
+            PRIMARY KEY(user_id, model_id),
+            FOREIGN KEY(user_id) REFERENCES users(id),
+            FOREIGN KEY(model_id) REFERENCES models(id)
+        )
+    ''')
     
     # Seed Teacher Account if not exists
     c.execute("SELECT * FROM users WHERE role='teacher'")
@@ -44,6 +68,29 @@ def init_db():
     except sqlite3.OperationalError:
         c.execute("ALTER TABLE users ADD COLUMN account_status TEXT DEFAULT 'active'")
         
+    # Models table for teacher-managed LLM endpoints
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS models (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE NOT NULL,
+            api_url TEXT NOT NULL,
+            api_key TEXT,
+            system_prompt TEXT,
+            created_at TEXT
+        )
+    ''')
+    # Student access to models
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS student_model_access (
+            user_id INTEGER NOT NULL,
+            model_id INTEGER NOT NULL,
+            allowed INTEGER NOT NULL DEFAULT 1,
+            PRIMARY KEY(user_id, model_id),
+            FOREIGN KEY(user_id) REFERENCES users(id),
+            FOREIGN KEY(model_id) REFERENCES models(id)
+        )
+    ''')
+    
     conn.commit()
     conn.close()
 
@@ -158,6 +205,93 @@ def delete_user(user_id):
     conn.commit()
     conn.close()
 
+# --- Model Management Helpers ---
+
+def create_model(name, api_url, api_key=None, system_prompt=None):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute(
+        "INSERT INTO models (name, api_url, api_key, system_prompt, created_at) VALUES (?, ?, ?, ?, ?)",
+        (name, api_url, api_key, system_prompt, datetime.now().isoformat())
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_models():
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    c.execute("SELECT * FROM models")
+    rows = c.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def update_model(model_id, name=None, api_url=None, api_key=None, system_prompt=None):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    if name:
+        c.execute("UPDATE models SET name = ? WHERE id = ?", (name, model_id))
+    if api_url:
+        c.execute("UPDATE models SET api_url = ? WHERE id = ?", (api_url, model_id))
+    if api_key is not None:
+        c.execute("UPDATE models SET api_key = ? WHERE id = ?", (api_key, model_id))
+    if system_prompt is not None:
+        c.execute("UPDATE models SET system_prompt = ? WHERE id = ?", (system_prompt, model_id))
+    conn.commit()
+    conn.close()
+
+
+def delete_model(model_id):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("DELETE FROM models WHERE id = ?", (model_id,))
+    # also delete access records
+    c.execute("DELETE FROM student_model_access WHERE model_id = ?", (model_id,))
+    conn.commit()
+    conn.close()
+
+
+def set_student_model_access(user_id, model_id, allowed):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute(
+        "INSERT INTO student_model_access (user_id, model_id, allowed) VALUES (?, ?, ?)"
+        " ON CONFLICT(user_id, model_id) DO UPDATE SET allowed=excluded.allowed",
+        (user_id, model_id, allowed)
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_allowed_models_for_student(user_id):
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    c.execute('''
+        SELECT m.* FROM models m
+        JOIN student_model_access a ON m.id = a.model_id
+        WHERE a.user_id = ? AND a.allowed = 1
+    ''', (user_id,))
+    rows = c.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_students_for_model(model_id):
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    c.execute('''
+        SELECT u.* FROM users u
+        JOIN student_model_access a ON u.id = a.user_id
+        WHERE a.model_id = ? AND a.allowed = 1 AND u.role = 'student'
+    ''', (model_id,))
+    rows = c.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
 # --- Deployment Management ---
 
 def get_deployment(user_id):
@@ -198,6 +332,114 @@ def stop_deployment_record(user_id):
     c.execute("UPDATE deployments SET status = 'stopped', pid = NULL WHERE user_id = ?", (user_id,))
     conn.commit()
     conn.close()
+
+# ---------------------------------------------------------------------------
+# model-related helper functions
+# ---------------------------------------------------------------------------
+
+def create_model(name, api_url, api_key=None, system_prompt=None):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    try:
+        c.execute(
+            "INSERT INTO models (name, api_url, api_key, system_prompt, created_at) VALUES (?, ?, ?, ?, ?)",
+            (name, api_url, api_key, system_prompt, datetime.now().isoformat())
+        )
+        conn.commit()
+        return True
+    except sqlite3.IntegrityError:
+        return False
+    finally:
+        conn.close()
+
+
+def get_models():
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    c.execute("SELECT * FROM models ORDER BY name")
+    rows = c.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def update_model(model_id, name=None, api_url=None, api_key=None, system_prompt=None):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    fields = []
+    vals = []
+    if name is not None:
+        fields.append("name = ?")
+        vals.append(name)
+    if api_url is not None:
+        fields.append("api_url = ?")
+        vals.append(api_url)
+    if api_key is not None:
+        fields.append("api_key = ?")
+        vals.append(api_key)
+    if system_prompt is not None:
+        fields.append("system_prompt = ?")
+        vals.append(system_prompt)
+    if not fields:
+        conn.close()
+        return
+    vals.append(model_id)
+    sql = "UPDATE models SET %s WHERE id = ?" % ", ".join(fields)
+    c.execute(sql, tuple(vals))
+    conn.commit()
+    conn.close()
+
+
+def delete_model(model_id):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("DELETE FROM models WHERE id = ?", (model_id,))
+    c.execute("DELETE FROM student_model_access WHERE model_id = ?", (model_id,))
+    conn.commit()
+    conn.close()
+
+
+def set_student_model_access(user_id, model_id, allowed):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute(
+        "INSERT INTO student_model_access (user_id, model_id, allowed) VALUES (?, ?, ?) "
+        "ON CONFLICT(user_id, model_id) DO UPDATE SET allowed=excluded.allowed",
+        (user_id, model_id, 1 if allowed else 0)
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_allowed_models_for_student(user_id):
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    c.execute(
+        "SELECT m.* FROM models m "
+        "JOIN student_model_access a ON m.id = a.model_id "
+        "WHERE a.user_id = ? AND a.allowed = 1", (user_id,)
+    )
+    rows = c.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_students_for_model(model_id):
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    c.execute(
+        "SELECT u.* FROM users u "
+        "JOIN student_model_access a ON u.id = a.user_id "
+        "WHERE a.model_id = ? AND a.allowed = 1", (model_id,)
+    )
+    rows = c.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+# ---------------------------------------------------------------------------
+
 
 def cleanup_zombies():
     """Check all running deployments and verify if process exists."""
