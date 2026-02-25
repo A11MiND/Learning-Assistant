@@ -1,4 +1,7 @@
-# 🎓 DSE AI Tutor (Streamlit + AnythingLLM + Ollama)
+# DSE AI Tutor (Streamlit + AnythingLLM + Ollama)
+
+This platform now supports teacher-managed language models. Teachers can add multiple model endpoints, supply system prompts, and control which students have access to which models. Students see a simple chat UI and a notebook for tracking mistakes.
+
 
 A comprehensive, multi-user AI tutoring platform that empowers students to design, build, and publish their own personalized AI tutors. This system integrates **Streamlit**, **Ollama**, and **AnythingLLM** to provide a robust environment for AI education.
 
@@ -8,11 +11,11 @@ A comprehensive, multi-user AI tutoring platform that empowers students to desig
   - **Teacher Dashboard**: Manage student accounts, monitor running apps, and handle system cleanup.
   - **Student Workspace**: A dedicated environment for students to configure and launch their AI apps.
 
-- **🛠️ App Designer**:
+- **App Designer**:
   - Students can customize their AI's personality (System Prompt).
   - Configure backend connections (Ollama for Vision, AnythingLLM for RAG/Chat).
 
-- **🚀 One-Click Publishing**:
+- **One-Click Publishing**:
   - The platform acts as an "App Store". Students can click "Publish" to spawn their AI tutor as a **standalone web application** on a unique port (e.g., `8502`, `8503`).
   - Uses `subprocess` and `psutil` for robust process management.
 
@@ -63,7 +66,7 @@ Required for the chat interface and vector database management.
    - **Generate an API Key** (Settings -> Developer API).
    - You will need the **API Key** and **Workspace Slug** to configure the student apps.
 
-## 🚀 Installation & Setup
+## Installation & Setup
 
 1. **Clone the Repository**
    ```bash

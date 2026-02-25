@@ -103,6 +103,21 @@ To start the main application platform:
 
 ---
 
+## TEACHER INTERFACE
+
+Teachers have full control over available AI models and student access.
+
+### Model Management
+1.  Log in as a teacher (default credentials: username `teacher`, password `admin`).
+2.  Open the **Teacher Dashboard**.
+3.  Navigate to **Model Management**.
+4.  Add a model by providing a display name, API URL, optional key, and optional system prompt.
+5.  Once models exist, switch to **Student Management**, expand a student and enable or disable their access to each model.
+
+The system prompt you supply per model will be inherited automatically when students chat with that model. Students cannot modify prompts or URLs.
+
+---
+
 ## STUDENT INTERFACE
 
 The student interface focuses on creating and managing personalized AI learning assistants.
@@ -173,7 +188,7 @@ This scenario guides you through creating a specialized AI Tutor for learning Cy
 
 ### STEP 3: PUBLISH THE APP
 1.  Click on **"Publish & Run"** in the sidebar.
-2.  Click the **"▶️ Publish & Launch"** button.
+2.  Click the **"Publish & Launch"** button.
 3.  Wait for the success message: `App launched on port 8502!`.
 
 ### STEP 4: START LEARNING
