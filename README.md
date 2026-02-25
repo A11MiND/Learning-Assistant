@@ -110,3 +110,4 @@ Required for the chat interface and vector database management.
 
 ## 🔗 Links
 - GitHub: [https://github.com/A11MiND](https://github.com/A11MiND)
+# Learning-Assistant
