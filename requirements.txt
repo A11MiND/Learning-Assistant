@@ -1,37 +1,3 @@
-accelerate==1.6.0
-aext-assistant @ file:///private/var/folders/nz/j6p8yfhx1mv_0grj5xl4650h0000gp/T/abs_5blio7a88h/croot/aext-assistant_1717062156186/work
-aext-assistant-server @ file:///private/var/folders/nz/j6p8yfhx1mv_0grj5xl4650h0000gp/T/abs_84ykzx_q85/croot/aext-assistant-server_1717059976819/work
-aext-core @ file:///private/var/folders/nz/j6p8yfhx1mv_0grj5xl4650h0000gp/T/abs_6230gwvics/croot/aext-core_1717056412538/work
-aext-core-server @ file:///private/var/folders/k1/30mswbxs7r1g6zwn8y4fyt500000gp/T/abs_8eywdkec83/croot/aext-core-server_1717075040870/work
-aext-panels @ file:///private/var/folders/nz/j6p8yfhx1mv_0grj5xl4650h0000gp/T/abs_70wky0p3yf/croot/aext-panels_1717062185397/work
-aext-panels-server @ file:///private/var/folders/nz/j6p8yfhx1mv_0grj5xl4650h0000gp/T/abs_ce_grc3i0p/croot/aext-panels-server_1717060164537/work
-aext-share-notebook @ file:///private/var/folders/nz/j6p8yfhx1mv_0grj5xl4650h0000gp/T/abs_72nt4kju8z/croot/aext-share-notebook_1717059289451/work
-aext-share-notebook-server @ file:///private/var/folders/k1/30mswbxs7r1g6zwn8y4fyt500000gp/T/abs_69t2t119ho/croot/aext-share-notebook-server_1717057941963/work
-aext-shared @ file:///private/var/folders/nz/j6p8yfhx1mv_0grj5xl4650h0000gp/T/abs_c50ggfu1al/croot/aext-shared_1716991097396/work
-aiobotocore @ file:///private/var/folders/k1/30mswbxs7r1g6zwn8y4fyt500000gp/T/abs_1cl06d5vjc/croot/aiobotocore_1714464399334/work
-aiocache==0.12.3
-aiocqhttp==1.4.2
-aiodns==3.2.0
-aiofiles==24.1.0
-aiohappyeyeballs @ file:///private/var/folders/k1/30mswbxs7r1g6zwn8y4fyt500000gp/T/abs_170hwh6b2i/croot/aiohappyeyeballs_1725434022310/work
-aiohttp==3.10.5
-aioitertools @ file:///tmp/build/80754af9/aioitertools_1607109665762/work
-aiolimiter==1.1.0
-aioprometheus==23.12.0
-aiosignal @ file:///tmp/build/80754af9/aiosignal_1637843061372/work
-aiosqlite==0.21.0
-alabaster @ file:///private/var/folders/nz/j6p8yfhx1mv_0grj5xl4650h0000gp/T/abs_39uesgct45/croot/alabaster_1718201495024/work
-alembic==1.13.1
-altair @ file:///private/var/folders/nz/j6p8yfhx1mv_0grj5xl4650h0000gp/T/abs_a8x4081_4h/croot/altair_1687526044471/work
-amqp==5.3.1
-anaconda-anon-usage @ file:///private/var/folders/k1/30mswbxs7r1g6zwn8y4fyt500000gp/T/abs_3eler6mjxh/croot/anaconda-anon-usage_1710965076906/work
-anaconda-catalogs @ file:///private/var/folders/nz/j6p8yfhx1mv_0grj5xl4650h0000gp/T/abs_e8tmw882qa/croot/anaconda-catalogs_1685727305051/work
-anaconda-client @ file:///private/var/folders/k1/30mswbxs7r1g6zwn8y4fyt500000gp/T/abs_4fl23009pr/croot/anaconda-client_1708640644054/work
-anaconda-cloud-auth @ file:///private/var/folders/k1/30mswbxs7r1g6zwn8y4fyt500000gp/T/abs_bazegf935a/croot/anaconda-cloud-auth_1713991395391/work
-anaconda-navigator @ file:///private/var/folders/k1/30mswbxs7r1g6zwn8y4fyt500000gp/T/abs_c57zkjz1pq/croot/anaconda-navigator_1713464022634/work
-anaconda-project @ file:///private/var/folders/nz/j6p8yfhx1mv_0grj5xl4650h0000gp/T/abs_6ddp1qj6b_/croots/recipe/anaconda-project_1660339893712/work
-annotated-types @ file:///private/var/folders/nz/j6p8yfhx1mv_0grj5xl4650h0000gp/T/abs_1fa2djihwb/croot/annotated-types_1709542925772/work
-anyio==4.9.0
 appdirs==1.4.4
 applaunchservices @ file:///private/var/folders/nz/j6p8yfhx1mv_0grj5xl4650h0000gp/T/abs_1fiu9w6r9i/croots/recipe/applaunchservices_1661854643906/work
 appnope @ file:///Users/ktietz/demo/mc3/conda-bld/appnope_1629146036738/work
@@ -497,7 +463,11 @@ tblib @ file:///Users/ktietz/demo/mc3/conda-bld/tblib_1629402031467/work
 tenacity @ file:///private/var/folders/nz/j6p8yfhx1mv_0grj5xl4650h0000gp/T/abs_e4laqy9gpr/croot/tenacity_1721222508993/work
 terminado @ file:///private/var/folders/nz/j6p8yfhx1mv_0grj5xl4650h0000gp/T/abs_fcfvyc0an2/croot/terminado_1671751835701/work
 texify==0.1.10
-text-unidecode @ file:///Users/ktietz/demo/mc3/conda-bld/text-unidecode_1629401354553/work
+
+# Minimal requirements for Streamlit Cloud deployment
+streamlit
+requests
+
 textdistance @ file:///tmp/build/80754af9/textdistance_1612461398012/work
 tf-playwright-stealth==1.1.2
 threadpoolctl @ file:///private/var/folders/nz/j6p8yfhx1mv_0grj5xl4650h0000gp/T/abs_efa5bvb6vi/croot/threadpoolctl_1719407806403/work
