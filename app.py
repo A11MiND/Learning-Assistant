@@ -1,27 +1,58 @@
 import streamlit as st
-import sys
-import requests
 import json
 import os
-from datetime import datetime
-import uuid
 import glob
-import subprocess
+import uuid
 import socket
-import time
+from datetime import datetime
 import database
 import rag_utils
 from openai import OpenAI
 
-# ---- OpenAI-compatible model API helpers ----
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
+
+DATA_DIR = "data"
+SYSTEM_SETTINGS_FILE = os.path.join(DATA_DIR, "system", "settings.json")
+
+def get_local_ip():
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
+
+SERVER_IP = get_local_ip()
+DEFAULT_OLLAMA_URL = f"http://{SERVER_IP}:11434"
+DEFAULT_ANYTHINGLLM_URL = f"http://{SERVER_IP}:3001/api/v1"
+
+# ---------------------------------------------------------------------------
+# System settings
+# ---------------------------------------------------------------------------
+
+def load_system_settings():
+    if os.path.exists(SYSTEM_SETTINGS_FILE):
+        try:
+            with open(SYSTEM_SETTINGS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+def save_system_settings(settings):
+    os.makedirs(os.path.dirname(SYSTEM_SETTINGS_FILE), exist_ok=True)
+    with open(SYSTEM_SETTINGS_FILE, "w", encoding="utf-8") as f:
+        json.dump(settings, f, indent=2)
+
+# ---------------------------------------------------------------------------
+# Model API
+# ---------------------------------------------------------------------------
 
 def call_model_api(model, messages):
-    """
-    Multi-turn chat call using the OpenAI client library.
-    model: dict with api_url, api_key, model_name, system_prompt, override_prompt (optional)
-    messages: list of {"role": ..., "content": ...} (user + assistant turns, no system msg)
-    Returns: response string
-    """
     client = OpenAI(
         api_key=model.get("api_key") or "not-required",
         base_url=model["api_url"]
@@ -44,98 +75,59 @@ def call_model_api(model, messages):
     except Exception as e:
         return f"[Model Error]: {e}"
 
-
 def call_model_api_single(model, prompt):
-    """Convenience wrapper for a single-turn call (summaries, indexing, etc.)."""
     return call_model_api(model, [{"role": "user", "content": prompt}])
 
-# --- Helper Functions ---
-
-def get_local_ip():
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-        s.close()
-        return ip
-    except Exception:
-        return "127.0.0.1"
-
-SERVER_IP = get_local_ip()
-
-# --- Configuration & Constants ---
-DEFAULT_ANYTHINGLLM_URL = f"http://{SERVER_IP}:3001/api/v1"
-DEFAULT_OLLAMA_URL = f"http://{SERVER_IP}:11434"
-DATA_DIR = "data"
-
-# --- System Settings Helper ---
-SYSTEM_SETTINGS_FILE = "data/system/settings.json"
-
-def load_system_settings():
-    if os.path.exists(SYSTEM_SETTINGS_FILE):
-        try:
-            with open(SYSTEM_SETTINGS_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except:
-            pass
-    return {}
-
-def save_system_settings(settings):
-    os.makedirs(os.path.dirname(SYSTEM_SETTINGS_FILE), exist_ok=True)
-    with open(SYSTEM_SETTINGS_FILE, "w", encoding="utf-8") as f:
-        json.dump(settings, f, indent=2)
-
-# Initialize DB
-database.init_db()
-database.cleanup_zombies() # Cleanup on startup
-
-st.set_page_config(page_title="DSE AI Tutor Platform", layout="wide")
-
-# Apply System Customization (CSS) if exists
-sys_settings = load_system_settings()
-if sys_settings.get("background_url"):
-    page_bg_img = f'''
-    <style>
-    .stApp {{
-        background-image: url("{sys_settings.get("background_url")}");
-        background-size: cover;
-    }}
-    </style>
-    '''
-    st.markdown(page_bg_img, unsafe_allow_html=True)
-
-# --- Helper Functions ---
+# ---------------------------------------------------------------------------
+# Student data helpers
+# ---------------------------------------------------------------------------
 
 def get_user_dir(username):
-    user_dir = os.path.join(DATA_DIR, username)
-    if not os.path.exists(user_dir):
-        os.makedirs(user_dir)
-        os.makedirs(os.path.join(user_dir, "history"), exist_ok=True)
-    return user_dir
+    return os.path.join(DATA_DIR, username)
 
-def load_config(username):
-    config_file = os.path.join(get_user_dir(username), "config.json")
-    if os.path.exists(config_file):
-        try:
-            with open(config_file, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except:
-            pass
-    return {}
+def save_session(username, session_id, messages):
+    if not messages:
+        return
+    title = "New Chat"
+    for msg in messages:
+        if msg["role"] == "user":
+            title = msg["content"][:30] + ("..." if len(msg["content"]) > 30 else "")
+            break
+    history_dir = os.path.join(get_user_dir(username), "history")
+    os.makedirs(history_dir, exist_ok=True)
+    file_path = os.path.join(history_dir, f"{session_id}.json")
+    to_save = []
+    for m in messages:
+        mc = m.copy()
+        mc.pop("image_data", None)
+        to_save.append(mc)
+    with open(file_path, "w", encoding="utf-8") as f:
+        json.dump({
+            "id": session_id,
+            "title": title,
+            "updated_at": datetime.now().isoformat(),
+            "messages": to_save
+        }, f, ensure_ascii=False, indent=2)
 
-def save_config(username, config):
-    config_file = os.path.join(get_user_dir(username), "config.json")
-    with open(config_file, "w", encoding="utf-8") as f:
-        json.dump(config, f, indent=2)
+def load_session(username, session_id):
+    file_path = os.path.join(get_user_dir(username), "history", f"{session_id}.json")
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return data.get("messages", []), data.get("title", "New Chat")
+    except Exception:
+        return [], "New Chat"
 
-# --- Student workspace helper functions ---
+def delete_session(username, session_id):
+    file_path = os.path.join(get_user_dir(username), "history", f"{session_id}.json")
+    if os.path.exists(file_path):
+        os.remove(file_path)
 
 def save_image(username, image_bytes):
     images_dir = os.path.join(get_user_dir(username), "images")
     os.makedirs(images_dir, exist_ok=True)
     filename = f"{uuid.uuid4()}.png"
-    file_path = os.path.join(images_dir, filename)
-    with open(file_path, "wb") as f:
+    with open(os.path.join(images_dir, filename), "wb") as f:
         f.write(image_bytes)
     return filename
 
@@ -157,528 +149,755 @@ def load_notebook(username):
 
 def save_notebook(username, data):
     path = get_notebook_path(username)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 def add_to_notebook(username, question, answer, summary=None):
-    notebook = load_notebook(username)
-    entry = {
+    nb = load_notebook(username)
+    nb.append({
         "id": str(uuid.uuid4()),
         "timestamp": datetime.now().isoformat(),
-        "title": (summary[:50] if summary else question[:50]),
+        "title": (summary or question)[:50],
         "question": question,
         "answer": answer,
-        "summary": summary,
-    }
-    notebook.append(entry)
-    save_notebook(username, notebook)
+        "summary": summary
+    })
+    save_notebook(username, nb)
 
 def delete_notebook_entry(username, entry_id):
-    notebook = load_notebook(username)
-    notebook = [n for n in notebook if n["id"] != entry_id]
-    save_notebook(username, notebook)
+    nb = [e for e in load_notebook(username) if e["id"] != entry_id]
+    save_notebook(username, nb)
 
-def save_session(username, session_id, messages):
-    if not messages:
-        return
-    title = "New Chat"
-    for msg in messages:
-        if msg["role"] == "user":
-            title = msg["content"][:30] + ("..." if len(msg["content"]) > 30 else "")
-            break
-    history_dir = os.path.join(get_user_dir(username), "history")
-    os.makedirs(history_dir, exist_ok=True)
-    file_path = os.path.join(history_dir, f"{session_id}.json")
-    messages_to_save = []
-    for msg in messages:
-        mc = msg.copy()
-        mc.pop("image_data", None)
-        messages_to_save.append(mc)
-    with open(file_path, "w", encoding="utf-8") as f:
-        json.dump({"id": session_id, "title": title,
-                   "updated_at": datetime.now().isoformat(),
-                   "messages": messages_to_save}, f, ensure_ascii=False, indent=2)
+def update_notebook_entry_title(username, entry_id, new_title):
+    nb = load_notebook(username)
+    for e in nb:
+        if e["id"] == entry_id:
+            e["title"] = new_title
+    save_notebook(username, nb)
 
-def get_free_port():
-    """Find a free port starting from 8502."""
-    active_ports = database.get_all_active_ports()
-    port = 8502
-    while True:
-        if port not in active_ports:
-            # Double check if port is actually free on OS
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            result = sock.connect_ex(('127.0.0.1', port))
-            sock.close()
-            if result != 0: # Port is closed (free)
-                return port
-        port += 1
+# ---------------------------------------------------------------------------
+# Startup
+# ---------------------------------------------------------------------------
 
-def start_student_app(user_id, username):
-    """Launch runner.py for a specific user on a new port."""
-    # Check if already running
-    dep = database.get_deployment(user_id)
-    if dep and dep['status'] == 'running':
-        # Check if process is actually alive
-        try:
-            os.kill(dep['pid'], 0)
-            return dep['port'] # Still running
-        except OSError:
-            pass # Process dead, restart
+database.init_db()
+database.cleanup_zombies()
 
-    port = get_free_port()
-    
-    # Command to run Streamlit
-    cmd = [
-        sys.executable, "-m", "streamlit", "run", "runner.py",
-        "--server.port", str(port),
-        "--server.headless", "true",
-        "--server.address", "0.0.0.0",
-        "--server.fileWatcherType", "none",
-        "--", f"user_id={user_id}"
-    ]
-    
-    # Start process
-    process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    
-    # Update DB
-    database.update_deployment(user_id, port, process.pid)
-    
-    # Wait a bit for it to start
-    time.sleep(2)
-    return port
+sys_settings = load_system_settings()
+st.set_page_config(
+    page_title=sys_settings.get("school_name", "DSE AI Tutor Platform"),
+    layout="wide"
+)
 
-def stop_student_app(user_id):
-    dep = database.get_deployment(user_id)
-    if dep and dep['pid']:
-        try:
-            os.kill(dep['pid'], 15) # SIGTERM
-        except OSError:
-            pass
-        database.stop_deployment_record(user_id)
+# Background CSS
+if sys_settings.get("background_url"):
+    st.markdown(f"""<style>
+.stApp {{
+    background-image: url("{sys_settings['background_url']}");
+    background-size: cover; background-attachment: fixed;
+}}
+</style>""", unsafe_allow_html=True)
 
-# --- UI Components ---
+# ---------------------------------------------------------------------------
+# Session state bootstrap
+# ---------------------------------------------------------------------------
+
+if "user" not in st.session_state:
+    st.session_state.user = None
+
+# ===========================================================================
+# LOGIN / REGISTER
+# ===========================================================================
 
 def render_login():
-    sys_settings = load_system_settings()
-    
-    # Custom Branding
+    school = sys_settings.get("school_name", "DSE AI Tutor Platform")
     if sys_settings.get("logo_url"):
-        st.image(sys_settings.get("logo_url"), width=200)
-    
-    title = sys_settings.get("school_name", "DSE AI Learner Login")
-    st.title(title)
-    
-    tab1, tab2 = st.tabs(["Login", "Register"])
-    
-    with tab1:
-        username = st.text_input("Username")
-        password = st.text_input("Password", type="password")
-        if st.button("Login"):
-            user = database.verify_user(username, password)
+        st.image(sys_settings["logo_url"], width=120)
+    st.title(school)
+
+    tab_login, tab_register = st.tabs(["Login", "Register"])
+
+    with tab_login:
+        with st.form("login_form"):
+            login_id = st.text_input("Username or Email")
+            pwd = st.text_input("Password", type="password")
+            submitted = st.form_submit_button("Login", use_container_width=True)
+        if submitted:
+            user = database.verify_user(login_id, pwd)
             if user:
-                if user.get('account_status') == 'banned':
-                    st.error("This account has been suspended.")
+                if user.get("account_status") == "banned":
+                    st.error("Your account has been banned. Please contact admin.")
                 else:
                     st.session_state.user = user
-                    st.success(f"Welcome, {user['name']}!")
                     st.rerun()
             else:
-                st.error("Invalid credentials")
-                
-    with tab2:
-        new_user = st.text_input("New Username")
-        new_pass = st.text_input("New Password", type="password")
-        new_name = st.text_input("Full Name")
-        if st.button("Register"):
-            if database.create_user(new_user, new_pass, "student", new_name):
-                st.success("Registration successful! Please login.")
+                st.error("Invalid username/email or password.")
+        st.caption("Forgot password? Contact your teacher or admin.")
+
+    with tab_register:
+        st.write("Register a new student account.")
+        with st.form("reg_form"):
+            r_user = st.text_input("Username")
+            r_email = st.text_input("Email")
+            r_name = st.text_input("Full Name")
+            r_pwd = st.text_input("Password", type="password")
+            r_pwd2 = st.text_input("Confirm Password", type="password")
+            r_submit = st.form_submit_button("Register", use_container_width=True)
+        if r_submit:
+            if not r_user or not r_pwd:
+                st.error("Username and password are required.")
+            elif r_pwd != r_pwd2:
+                st.error("Passwords do not match.")
             else:
-                st.error("Username already exists.")
+                ok, msg = database.create_user(r_user, r_pwd, "student", r_name or r_user,
+                                               email=r_email or None)
+                if ok:
+                    st.success("Account created! You can now log in.")
+                else:
+                    st.error(f"Registration failed: {msg}")
 
-def render_profile(user):
-    st.header("User Profile")
-    
-    with st.form("profile_form"):
-        new_name = st.text_input("Display Name", value=user['name'])
-        new_pass = st.text_input("New Password (leave blank to keep)", type="password")
-        
-        if st.form_submit_button("Update Profile"):
-            success, msg = database.update_user_profile(
-                user['id'], 
-                new_password=new_pass if new_pass else None,
-                new_name=new_name
-            )
-            if success:
-                st.success("Profile updated! Please re-login.")
-                st.session_state.user = None
-                st.rerun()
-            else:
-                st.error(msg)
+# ===========================================================================
+# ADMIN DASHBOARD
+# ===========================================================================
 
-def render_teacher_dashboard():
-    st.title("Teacher Dashboard")
-
-    tab_students, tab_models, tab_kb, tab_system = st.tabs(
-        ["Student Management", "Model Management", "Knowledge Base", "System Customization"]
-    )
-    
-    with tab_students:
-        if st.button("Refresh List"):
+def render_admin_dashboard(user):
+    with st.sidebar:
+        st.subheader(f"Admin: {user['name']}")
+        nav = st.radio("Navigation", [
+            "👥 Users",
+            "🏫 Classes",
+            "🤝 Teacher-Students",
+            "⚙️ System Settings"
+        ], label_visibility="collapsed")
+        st.divider()
+        if st.button("Logout", use_container_width=True):
+            st.session_state.user = None
             st.rerun()
-            
-        students = database.get_all_students()
-        
-        # Table Header
-        cols = st.columns([1, 2, 2, 1.5, 1.5, 4])
-        cols[0].markdown("**ID**")
-        cols[1].markdown("**Name**")
-        cols[2].markdown("**Username**")
-        cols[3].markdown("**App Status**")
-        cols[4].markdown("**Acc Status**")
-        cols[5].markdown("**Actions**")
-        
-        # Pre-fetch all models for access checkboxes
-        all_models = database.get_models()
-        
-        for s in students:
-            with st.container():
-                cols = st.columns([1, 2, 2, 1.5, 1.5, 4])
-                cols[0].write(s['id'])
-                cols[1].write(s['name'])
-                cols[2].write(s['username'])
-                
-                # App Status
-                dep = database.get_deployment(s['id'])
-                app_status = "Stopped"
-                app_url = ""
-                is_running = False
-                if dep and dep['status'] == 'running':
-                    try:
-                        os.kill(dep['pid'], 0)
-                        app_status = f"Running (port {dep['port']})"
-                        app_url = f"http://{SERVER_IP}:{dep['port']}"
-                        is_running = True
-                    except:
-                        app_status = "Zombie"
-                cols[3].write(app_status)
-                
-                # Account Status
-                acc_status = s.get('account_status', 'active')
-                if acc_status == 'banned':
-                    cols[4].markdown("BANNED")
-                else:
-                    cols[4].markdown("Active")
-                
-                # Actions
-                with cols[5]:
-                    sub_cols = st.columns([1.2, 1.2, 1.2], gap="small")
-                    
-                    with sub_cols[0]:
-                        if is_running:
-                            if st.button("Stop", key=f"stop_{s['id']}"):
-                                stop_student_app(s['id'])
-                                st.rerun()
-                        else:
-                            if st.button("Run", key=f"run_{s['id']}"):
-                                 start_student_app(s['id'], s['username'])
-                                 st.rerun()
-                    with sub_cols[1]:
-                        if app_url:
-                            st.write(f"[Open]({app_url})")
-                        else:
-                             st.write("-")
-                    with sub_cols[2]:
-                        if acc_status == 'banned':
-                            if st.button("Unban", key=f"unban_{s['id']}"):
-                                database.update_user_status(s['id'], 'active')
-                                st.rerun()
-                        else:
-                            if st.button("Ban", key=f"ban_{s['id']}"):
-                                database.update_user_status(s['id'], 'banned')
-                                stop_student_app(s['id'])
-                                st.rerun()
-                    
-                    with st.expander("Edit / Delete"):
-                        with st.form(key=f"edit_form_{s['id']}"):
-                            new_name = st.text_input("Name", value=s['name'])
-                            new_user = st.text_input("Username", value=s['username'])
-                            reset_pw = st.checkbox("Reset Password to 'password'")
-                            
-                            col_a, col_b = st.columns(2)
-                            with col_a:
-                                if st.form_submit_button("Save Changes"):
-                                    pw = "password" if reset_pw else None
-                                    success, msg = database.admin_update_user(s['id'], new_name, new_user, pw)
-                                    if success:
-                                        st.success("Updated!")
-                                        time.sleep(0.5)
-                                        st.rerun()
-                                    else:
-                                        st.error(msg)
-                            with col_b:
-                                if st.form_submit_button("Delete User", type="primary"):
-                                    database.delete_user(s['id'])
-                                    st.rerun()
-                # Model access section
-                with st.expander("Model Access"):
-                    # Fetch current access rows so we can show override_prompt too
-                    access_map = {}
-                    for row in database.get_allowed_models_for_student(s['id']):
-                        access_map[row['id']] = row
-                    for m in all_models:
-                        checked = m['id'] in access_map
-                        new_val = st.checkbox(m['name'], value=checked, key=f"access_{s['id']}_{m['id']}")
-                        if new_val:
-                            override = st.text_area(
-                                "Override instruction for this student + model",
-                                value=access_map.get(m['id'], {}).get('override_prompt') or "",
-                                key=f"override_{s['id']}_{m['id']}",
-                                help="Appended to the model's system prompt only for this student."
-                            )
-                        if new_val != checked:
-                            op = override if new_val else None
-                            database.set_student_model_access(s['id'], m['id'], 1 if new_val else 0, op)
+
+    if nav == "👥 Users":
+        _admin_users(user)
+    elif nav == "🏫 Classes":
+        _admin_classes()
+    elif nav == "🤝 Teacher-Students":
+        _admin_teacher_students()
+    elif nav == "⚙️ System Settings":
+        _admin_system_settings()
+
+
+def _admin_users(current_admin):
+    st.header("User Management")
+
+    col_a, col_b = st.columns([2, 1])
+
+    with col_a:
+        st.subheader("All Users")
+        all_users = database.get_all_users()
+        role_filter = st.selectbox("Filter by role", ["all", "admin", "teacher", "student"])
+        if role_filter != "all":
+            all_users = [u for u in all_users if u["role"] == role_filter]
+
+        for u in all_users:
+            with st.expander(f"{u['username']} | {u['role']} | {u.get('account_status','active')}"):
+                n_name = st.text_input("Name", u["name"], key=f"un_{u['id']}")
+                n_uname = st.text_input("Username", u["username"], key=f"uu_{u['id']}")
+                n_email = st.text_input("Email", u.get("email") or "", key=f"ue_{u['id']}")
+                n_pwd = st.text_input("New Password (leave blank to keep)", type="password", key=f"up_{u['id']}")
+                n_role = st.selectbox("Role", ["student","teacher","admin"],
+                                      index=["student","teacher","admin"].index(u["role"]),
+                                      key=f"ur_{u['id']}")
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    if st.button("Save", key=f"usave_{u['id']}"):
+                        ok, msg = database.admin_update_user(
+                            u["id"], n_name, n_uname,
+                            email=n_email or None,
+                            password=n_pwd or None,
+                            role=n_role
+                        )
+                        if ok:
+                            st.success("Updated")
                             st.rerun()
-                        elif new_val:
-                            old_op = access_map.get(m['id'], {}).get('override_prompt') or ""
-                            if override != old_op:
-                                database.set_student_model_access(s['id'], m['id'], 1, override or None)
-                                st.rerun()
-                st.divider()
+                        else:
+                            st.error(msg)
+                with col2:
+                    status = u.get("account_status", "active")
+                    if status == "active":
+                        if st.button("Ban", key=f"uban_{u['id']}"):
+                            database.update_user_status(u["id"], "banned")
+                            st.rerun()
+                    else:
+                        if st.button("Unban", key=f"uunban_{u['id']}"):
+                            database.update_user_status(u["id"], "active")
+                            st.rerun()
+                with col3:
+                    if u["id"] != current_admin["id"]:
+                        if st.button("Delete", key=f"udel_{u['id']}", type="primary"):
+                            database.delete_user(u["id"])
+                            st.rerun()
 
-    with tab_models:
-        st.header("Model Management")
-        st.info("Add, edit or remove LLM endpoints. Model ID is the identifier sent in each API request (e.g. gpt-4o, deepseek-chat, Qwen/Qwen2.5-72B-Instruct).")
-
-        models = database.get_models()
-        if models:
-            for m in models:
-                with st.expander(f"{m['name']} — {m.get('model_name','')}"):
-                    with st.form(key=f"edit_model_{m['id']}"):
-                        name = st.text_input("Display Name", value=m['name'])
-                        model_name = st.text_input("Model ID", value=m.get('model_name', ''),
-                                                   help="e.g. gpt-4o, deepseek-chat, Qwen/Qwen2.5-72B-Instruct")
-                        url = st.text_input("API Base URL", value=m['api_url'],
-                                            help="e.g. https://api.openai.com/v1 or https://api.siliconflow.cn/v1")
-                        key = st.text_input("API Key", value=m.get('api_key', ''))
-                        prompt = st.text_area("System Prompt", value=m.get('system_prompt', ''),
-                                             help="Invisible to students. Use this to enforce pedagogical rules, e.g. guide thinking instead of giving direct answers.")
-                        col_a, col_b = st.columns(2)
-                        with col_a:
-                            if st.form_submit_button("Save Changes"):
-                                database.update_model(m['id'], name=name, model_name=model_name,
-                                                     api_url=url, api_key=key or None,
-                                                     system_prompt=prompt or None)
-                                st.success("Updated")
-                                st.rerun()
-                        with col_b:
-                            if st.form_submit_button("Delete Model", type="primary"):
-                                database.delete_model(m['id'])
-                                st.rerun()
-        else:
-            st.write("No models defined yet.")
-
-        st.markdown("---")
-        st.subheader("Add New Model")
-        with st.form("add_model"):
-            name = st.text_input("Display Name")
-            model_name = st.text_input("Model ID", help="e.g. gpt-4o, deepseek-chat, Qwen/Qwen2.5-72B-Instruct")
-            url = st.text_input("API Base URL", help="e.g. https://api.openai.com/v1")
-            key = st.text_input("API Key (optional)")
-            prompt = st.text_area("System Prompt (optional)",
-                                  help="Pedagogical instructions invisible to students.")
-            if st.form_submit_button("Create Model"):
-                if name and model_name and url:
-                    database.create_model(name, model_name, url, api_key=key or None,
-                                          system_prompt=prompt or None)
-                    st.success("Model created")
-                    st.rerun()
-                else:
-                    st.error("Display Name, Model ID and API Base URL are required")
-    
-    with tab_kb:
-        st.header("Knowledge Base")
-        st.info("Upload subject materials. AI can generate practice questions from them and students can use them as reference context in Chat.")
-
-        # Upload section
-        with st.expander("Upload New Document", expanded=True):
-            with st.form("upload_doc"):
-                doc_name = st.text_input("Document Name / Title")
-                subject = st.text_input("Subject (optional)", placeholder="e.g. Biology, History")
-                uploaded = st.file_uploader("Choose file", type=["pdf", "docx", "txt"])
-                if st.form_submit_button("Upload"):
-                    if uploaded and doc_name:
-                        docs_dir = os.path.join("data", "system", "docs")
-                        os.makedirs(docs_dir, exist_ok=True)
-                        fname = f"{uuid.uuid4()}_{uploaded.name}"
-                        fpath = os.path.join(docs_dir, fname)
-                        with open(fpath, "wb") as f:
-                            f.write(uploaded.getvalue())
-                        ft = uploaded.name.rsplit(".", 1)[-1].lower()
-                        database.save_document(doc_name, fpath, ft, subject=subject or None)
-                        st.success(f"Uploaded: {doc_name}")
+    with col_b:
+        st.subheader("Add User")
+        with st.form("add_user_form"):
+            nu = st.text_input("Username")
+            ne = st.text_input("Email")
+            nn = st.text_input("Full Name")
+            np_ = st.text_input("Password", type="password")
+            nr = st.selectbox("Role", ["student", "teacher", "admin"])
+            if st.form_submit_button("Create User"):
+                if nu and np_:
+                    ok, msg = database.create_user(nu, np_, nr, nn or nu, email=ne or None)
+                    if ok:
+                        st.success("Created")
                         st.rerun()
                     else:
-                        st.error("Please enter a name and choose a file.")
+                        st.error(msg)
+                else:
+                    st.warning("Username and password required.")
 
-        # List documents
-        docs = database.get_documents()
+        st.divider()
+        st.subheader("Import Students (CSV)")
+        st.caption("CSV format: username,email,name,password")
+        csv_file = st.file_uploader("Upload CSV", type=["csv"], key="csv_import")
+        if csv_file and st.button("Import"):
+            text = csv_file.read().decode("utf-8")
+            ok_count, errors = database.import_students_from_csv(text)
+            st.success(f"Imported {ok_count} student(s).")
+            if errors:
+                for e in errors:
+                    st.warning(e)
+            st.rerun()
+
+
+def _admin_classes():
+    st.header("Class Management (All Teachers)")
+    all_classes = database.get_all_classes()
+    teachers = database.get_all_teachers()
+    teacher_map = {t["id"]: t["name"] for t in teachers}
+
+    if not all_classes:
+        st.info("No classes yet. Teachers can create classes in their dashboard.")
+        return
+
+    for cls in all_classes:
+        with st.expander(f"{cls['name']} — Teacher: {cls.get('teacher_name', '?')} | Subject: {cls.get('subject', '')}"):
+            n_name = st.text_input("Class Name", cls["name"], key=f"cln_{cls['id']}")
+            n_subj = st.text_input("Subject", cls.get("subject") or "", key=f"cls_{cls['id']}")
+            if st.button("Save Changes", key=f"clsave_{cls['id']}"):
+                database.update_class(cls["id"], name=n_name, subject=n_subj)
+                st.success("Updated")
+                st.rerun()
+
+            students = database.get_students_in_class(cls["id"])
+            st.markdown(f"**Students ({len(students)}):** " +
+                        ", ".join(s["username"] for s in students) if students else "**Students:** (none)")
+
+            if st.button("Delete Class", key=f"cldel_{cls['id']}", type="primary"):
+                database.delete_class(cls["id"])
+                st.rerun()
+
+
+def _admin_teacher_students():
+    st.header("Teacher-Student Relationships")
+    teachers = database.get_all_teachers()
+    all_students = database.get_all_students()
+    student_map = {s["id"]: s["username"] for s in all_students}
+
+    if not teachers:
+        st.info("No teachers found.")
+        return
+
+    for teacher in teachers:
+        st.subheader(f"Teacher: {teacher['name']} ({teacher['username']})")
+        classes = database.get_classes_for_teacher(teacher["id"])
+        if not classes:
+            st.caption("No classes.")
+            continue
+        for cls in classes:
+            with st.expander(f"Class: {cls['name']}"):
+                enrolled = database.get_students_in_class(cls["id"])
+                enrolled_ids = {s["id"] for s in enrolled}
+                for s in all_students:
+                    is_in = s["id"] in enrolled_ids
+                    checked = st.checkbox(
+                        s["username"],
+                        value=is_in,
+                        key=f"ats_{teacher['id']}_{cls['id']}_{s['id']}"
+                    )
+                    if checked != is_in:
+                        if checked:
+                            database.add_student_to_class(cls["id"], s["id"])
+                        else:
+                            database.remove_student_from_class(cls["id"], s["id"])
+                        st.rerun()
+
+
+def _admin_system_settings():
+    st.header("System Settings")
+    settings = load_system_settings()
+
+    with st.form("sys_settings_form"):
+        school_name = st.text_input("School / Platform Name",
+                                    value=settings.get("school_name", "DSE AI Tutor Platform"))
+        logo_url = st.text_input("Logo URL", value=settings.get("logo_url", ""))
+        bg_url = st.text_input("Background Image URL", value=settings.get("background_url", ""))
+        if st.form_submit_button("Save Settings"):
+            settings["school_name"] = school_name
+            settings["logo_url"] = logo_url
+            settings["background_url"] = bg_url
+            save_system_settings(settings)
+            st.success("Settings saved. Refresh the page to see changes.")
+
+
+# ===========================================================================
+# TEACHER DASHBOARD
+# ===========================================================================
+
+def render_teacher_dashboard(user):
+    with st.sidebar:
+        st.subheader(f"Teacher: {user['name']}")
+        nav = st.radio("Navigation", [
+            "🏫 My Classes",
+            "🤖 Models",
+            "📁 Knowledge Base"
+        ], label_visibility="collapsed")
+        st.divider()
+        if st.button("Logout", use_container_width=True):
+            st.session_state.user = None
+            st.rerun()
+
+    if nav == "🏫 My Classes":
+        _teacher_classes(user)
+    elif nav == "🤖 Models":
+        _teacher_models(user)
+    elif nav == "📁 Knowledge Base":
+        _teacher_kb(user)
+
+
+def _teacher_classes(user):
+    st.header("My Classes")
+    teacher_id = user["id"]
+
+    # Create class
+    with st.expander("Create New Class", expanded=False):
+        with st.form("new_class_form"):
+            c_name = st.text_input("Class Name")
+            c_subj = st.text_input("Subject (optional)")
+            if st.form_submit_button("Create"):
+                if c_name:
+                    database.create_class(c_name, teacher_id, c_subj or None)
+                    st.success("Class created")
+                    st.rerun()
+
+    classes = database.get_classes_for_teacher(teacher_id)
+    all_students = database.get_all_students()
+    all_models = database.get_models()
+    model_map = {m["id"]: m["name"] for m in all_models}
+
+    if not classes:
+        st.info("No classes yet. Create one above.")
+        return
+
+    for cls in classes:
+        with st.expander(f"Class: {cls['name']} | Subject: {cls.get('subject','')}", expanded=False):
+            n_name = st.text_input("Class Name", cls["name"], key=f"tcln_{cls['id']}")
+            n_subj = st.text_input("Subject", cls.get("subject") or "", key=f"tcls_{cls['id']}")
+            if st.button("Save", key=f"tclsave_{cls['id']}"):
+                database.update_class(cls["id"], name=n_name, subject=n_subj)
+                st.success("Saved")
+                st.rerun()
+
+            st.markdown("---")
+            st.markdown("**Students in this class**")
+            enrolled = database.get_students_in_class(cls["id"])
+            enrolled_ids = {s["id"] for s in enrolled}
+            for s in all_students:
+                is_in = s["id"] in enrolled_ids
+                checked = st.checkbox(
+                    s["username"],
+                    value=is_in,
+                    key=f"tcs_{cls['id']}_{s['id']}"
+                )
+                if checked != is_in:
+                    if checked:
+                        database.add_student_to_class(cls["id"], s["id"])
+                    else:
+                        database.remove_student_from_class(cls["id"], s["id"])
+                    st.rerun()
+
+            st.markdown("---")
+            st.markdown("**Model Access for this Class**")
+            cls_access = database.get_class_model_access(cls["id"])
+            for m in all_models:
+                cur = cls_access.get(m["id"], {})
+                col1, col2 = st.columns([3, 2])
+                with col1:
+                    allowed = st.checkbox(
+                        m["name"],
+                        value=bool(cur.get("allowed", 0)),
+                        key=f"tma_{cls['id']}_{m['id']}"
+                    )
+                with col2:
+                    override = st.text_input(
+                        "Override prompt",
+                        value=cur.get("override_prompt") or "",
+                        key=f"tmop_{cls['id']}_{m['id']}",
+                        label_visibility="collapsed",
+                        placeholder="Override prompt (optional)"
+                    )
+                save_key = f"tmasave_{cls['id']}_{m['id']}"
+                if st.button("Apply", key=save_key):
+                    database.set_class_model_access(cls["id"], m["id"], allowed, override or None)
+                    st.success("Saved")
+
+            st.markdown("---")
+            if st.button("Delete Class", key=f"tcldel_{cls['id']}", type="primary"):
+                database.delete_class(cls["id"])
+                st.rerun()
+
+
+def _teacher_models(user):
+    st.header("Model Management")
+    all_models = database.get_models()
+    all_docs = database.get_documents()
+    indexed_docs = [d for d in all_docs if d["index_status"] == "indexed"]
+    doc_map = {d["id"]: d["name"] for d in indexed_docs}
+
+    # --- Create model ---
+    with st.expander("Add New Model", expanded=False):
+        with st.form("add_model_form"):
+            m_name = st.text_input("Display Name")
+            m_model_name = st.text_input("Model Name (e.g. llama3)")
+            m_url = st.text_input("API URL", value=DEFAULT_OLLAMA_URL + "/v1")
+            m_key = st.text_input("API Key (leave blank if not needed)")
+            m_prompt = st.text_area("System Prompt (optional)")
+            if st.form_submit_button("Add Model"):
+                if m_name and m_url:
+                    ok = database.create_model(
+                        m_name, m_model_name, m_url, m_key or None,
+                        m_prompt or None, created_by=user["id"]
+                    )
+                    if ok:
+                        st.success("Model added")
+                        st.rerun()
+                    else:
+                        st.error("Model name already exists.")
+                else:
+                    st.warning("Display name and API URL required.")
+
+    if not all_models:
+        st.info("No models yet.")
+        return
+
+    for m in all_models:
+        with st.expander(f"Model: {m['name']}", expanded=False):
+            col1, col2 = st.columns(2)
+            with col1:
+                n_name = st.text_input("Display Name", m["name"], key=f"mn_{m['id']}")
+                n_model_name = st.text_input("Model Name", m.get("model_name",""), key=f"mmn_{m['id']}")
+                n_url = st.text_input("API URL", m["api_url"], key=f"mu_{m['id']}")
+            with col2:
+                n_key = st.text_input("API Key", m.get("api_key") or "", type="password", key=f"mk_{m['id']}")
+                n_prompt = st.text_area("System Prompt", m.get("system_prompt") or "", key=f"mp_{m['id']}")
+
+            # RAG link
+            if indexed_docs:
+                cur_links = database.get_rag_link_ids_for_model(m["id"])
+                linked = st.multiselect(
+                    "Linked Knowledge Base Files",
+                    list(doc_map.keys()),
+                    default=[d for d in cur_links if d in doc_map],
+                    format_func=lambda i: doc_map.get(i, str(i)),
+                    key=f"mrag_{m['id']}"
+                )
+            else:
+                linked = []
+                st.caption("No indexed KB files yet. Index files in Knowledge Base tab.")
+
+            col3, col4 = st.columns(2)
+            with col3:
+                if st.button("Save", key=f"msave_{m['id']}"):
+                    database.update_model(m["id"], n_name, n_model_name, n_url,
+                                          n_key or None, n_prompt or None)
+                    database.set_model_rag_links(m["id"], linked)
+                    st.success("Saved")
+                    st.rerun()
+            with col4:
+                if st.button("Delete", key=f"mdel_{m['id']}", type="primary"):
+                    database.delete_model(m["id"])
+                    st.rerun()
+
+            # Per-student access
+            with st.expander("Individual Student Access", expanded=False):
+                all_students = database.get_all_students()
+                for s in all_students:
+                    access_map = database.get_student_model_access_map(s["id"])
+                    cur = access_map.get(m["id"], {})
+                    col_a, col_b, col_c = st.columns([1, 2, 1])
+                    with col_a:
+                        allowed = st.checkbox(
+                            s["username"],
+                            value=bool(cur.get("allowed", 0)),
+                            key=f"sma_{m['id']}_{s['id']}"
+                        )
+                    with col_b:
+                        override = st.text_input(
+                            "Override",
+                            value=cur.get("override_prompt") or "",
+                            key=f"smop_{m['id']}_{s['id']}",
+                            label_visibility="collapsed",
+                            placeholder="Override prompt"
+                        )
+                    with col_c:
+                        if st.button("Set", key=f"smaset_{m['id']}_{s['id']}"):
+                            database.set_student_model_access(s["id"], m["id"], allowed, override or None)
+                            st.success("Set")
+
+
+def _teacher_kb(user):
+    st.header("Knowledge Base")
+    col_left, col_right = st.columns([1, 3])
+
+    with col_left:
+        st.markdown("**Folders**")
+        folders = database.get_folders(parent_id=None)
+        if st.button("+ New Folder"):
+            st.session_state.kb_new_folder = True
+
+        if st.session_state.get("kb_new_folder"):
+            with st.form("new_folder_form"):
+                fname = st.text_input("Folder Name")
+                if st.form_submit_button("Create"):
+                    if fname:
+                        database.create_folder(fname, created_by=user["id"])
+                        st.session_state.kb_new_folder = False
+                        st.rerun()
+
+        # Root / unfoldered
+        if st.button("All Files (root)", key="kb_root",
+                     type="primary" if st.session_state.get("kb_folder_id") is None else "secondary"):
+            st.session_state.kb_folder_id = None
+            st.rerun()
+
+        for folder in folders:
+            col_f1, col_f2 = st.columns([3, 1])
+            with col_f1:
+                if st.button(folder["name"], key=f"kbf_{folder['id']}",
+                             type="primary" if st.session_state.get("kb_folder_id") == folder["id"] else "secondary"):
+                    st.session_state.kb_folder_id = folder["id"]
+                    st.rerun()
+            with col_f2:
+                if st.button("Del", key=f"kbfdel_{folder['id']}"):
+                    database.delete_folder(folder["id"])
+                    if st.session_state.get("kb_folder_id") == folder["id"]:
+                        st.session_state.kb_folder_id = None
+                    st.rerun()
+
+    with col_right:
+        current_folder_id = st.session_state.get("kb_folder_id")
+        folder_label = "All Files" if current_folder_id is None else next(
+            (f["name"] for f in folders if f["id"] == current_folder_id), "Folder"
+        )
+        st.markdown(f"**{folder_label}**")
+
+        # Upload
+        with st.expander("Upload Document", expanded=False):
+            up_file = st.file_uploader("Select file (PDF, DOCX, TXT)", type=["pdf", "docx", "txt"],
+                                       key="kb_upload")
+            up_subj = st.text_input("Subject tag (optional)", key="kb_subj")
+            up_folder = current_folder_id
+            if up_file and st.button("Upload"):
+                docs_dir = os.path.join(DATA_DIR, "documents")
+                os.makedirs(docs_dir, exist_ok=True)
+                file_path = os.path.join(docs_dir, f"{uuid.uuid4()}_{up_file.name}")
+                with open(file_path, "wb") as f:
+                    f.write(up_file.read())
+                database.save_document(
+                    up_file.name, file_path, up_file.name.split(".")[-1].lower(),
+                    subject=up_subj or None,
+                    folder_id=up_folder,
+                    uploaded_by=user["id"]
+                )
+                st.success(f"Uploaded: {up_file.name}")
+                st.rerun()
+
+        # File list
+        docs = database.get_documents(folder_id=current_folder_id)
         if not docs:
-            st.write("No documents uploaded yet.")
+            st.info("No files here.")
         else:
             for doc in docs:
-                with st.expander(f"{doc['name']}  [{doc['index_status']}]"):
-                    st.write(f"File: `{os.path.basename(doc['file_path'])}`  |  Type: {doc['file_type']}  |  Subject: {doc.get('subject') or '-'}")
-
-                    col_idx, col_del = st.columns([2, 1])
-                    models_list = database.get_models()
-
-                    with col_idx:
-                        if doc['index_status'] != 'indexed':
-                            if models_list:
-                                idx_model_names = {m['id']: m['name'] for m in models_list}
-                                idx_model_id = st.selectbox("Model for indexing", idx_model_names.keys(),
-                                                            format_func=lambda i: idx_model_names[i],
-                                                            key=f"idx_model_{doc['id']}")
-                                if st.button("Build Index", key=f"build_idx_{doc['id']}"):
-                                    idx_model = next((m for m in models_list if m['id'] == idx_model_id), None)
-                                    with st.spinner("Building page index..."):
+                with st.expander(f"{doc['name']} [{doc['index_status']}]"):
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        if doc["index_status"] != "indexed":
+                            if st.button("Index", key=f"idx_{doc['id']}"):
+                                if doc.get("file_path") and os.path.exists(doc["file_path"]):
+                                    prog = st.progress(0, text="Indexing...")
+                                    try:
+                                        prog.progress(30, text="Extracting pages...")
                                         index = rag_utils.build_page_index(
-                                            doc['file_path'], doc['file_type'], model=idx_model
+                                            doc["file_path"], doc["file_type"]
                                         )
-                                        idx_path = rag_utils.save_index(doc['id'], index)
-                                        database.update_document_index(doc['id'], idx_path)
-                                    st.success(f"Indexed {index['page_count']} pages")
-                                    st.rerun()
-                            else:
-                                st.warning("Add a model first to enable AI indexing.")
+                                        prog.progress(70, text="Saving index...")
+                                        index_path = rag_utils.save_index(doc["id"], index)
+                                        database.update_document_index(doc["id"], index_path, "indexed")
+                                        prog.progress(100, text="Done!")
+                                        st.success("Indexed")
+                                        st.rerun()
+                                    except Exception as e:
+                                        prog.empty()
+                                        st.error(f"Index error: {e}")
+                                        database.update_document_index(doc["id"], None, "failed")
+                                else:
+                                    st.error("File not found on disk.")
                         else:
-                            idx = rag_utils.load_index(doc['index_path'])
-                            pages = idx['page_count'] if idx else '?'
-                            st.success(f"Index ready — {pages} pages")
-
-                    with col_del:
-                        if st.button("Delete Document", key=f"del_doc_{doc['id']}", type="primary"):
-                            if doc.get('index_path') and os.path.exists(doc['index_path']):
-                                os.remove(doc['index_path'])
-                            if os.path.exists(doc['file_path']):
-                                os.remove(doc['file_path'])
-                            database.delete_document(doc['id'])
+                            st.success("Indexed")
+                    with col2:
+                        # Move to folder
+                        all_folders = database.get_all_folders()
+                        folder_options = {"(root)": None}
+                        folder_options.update({f["name"]: f["id"] for f in all_folders})
+                        sel_folder = st.selectbox(
+                            "Move to",
+                            list(folder_options.keys()),
+                            key=f"movef_{doc['id']}"
+                        )
+                        if st.button("Move", key=f"movebtn_{doc['id']}"):
+                            database.move_document_to_folder(doc["id"], folder_options[sel_folder])
+                            st.rerun()
+                    with col3:
+                        if st.button("Delete", key=f"deldoc_{doc['id']}", type="primary"):
+                            if doc.get("file_path") and os.path.exists(doc["file_path"]):
+                                os.remove(doc["file_path"])
+                            idx_path = (doc.get("index_path") or "")
+                            if idx_path and os.path.exists(idx_path):
+                                os.remove(idx_path)
+                            database.delete_document(doc["id"])
                             st.rerun()
 
-                    # Question generation
-                    if doc['index_status'] == 'indexed':
-                        st.markdown("---")
-                        st.subheader("Generate Questions")
-                        with st.form(key=f"gen_q_{doc['id']}"):
-                            q_types = st.multiselect(
-                                "Question types",
-                                ["Multiple Choice", "Fill-in-the-blank", "Short Answer", "True/False"],
-                                default=["Multiple Choice", "Short Answer"]
+        # Question generation
+        with st.expander("Generate Practice Questions from Document"):
+            all_indexed = database.get_documents()
+            indexed = [d for d in all_indexed if d["index_status"] == "indexed"]
+            all_models = database.get_models()
+            all_students = database.get_all_students()
+
+            if not indexed:
+                st.info("Index documents first.")
+            elif not all_models:
+                st.info("Add a model first.")
+            else:
+                q_doc = st.selectbox("Document", indexed, format_func=lambda d: d["name"])
+                q_types = st.multiselect("Question types",
+                                         ["Multiple Choice", "Fill-in-the-blank", "Short Answer", "True/False"],
+                                         default=["Multiple Choice"])
+                q_model = st.selectbox("Model to use", all_models, format_func=lambda m: m["name"])
+                q_students = st.multiselect("Assign to students (optional)",
+                                            [s["username"] for s in all_students])
+                if st.button("Generate Questions"):
+                    if q_doc and q_types and q_model:
+                        idx_path = q_doc.get("index_path")
+                        context = ""
+                        if idx_path and os.path.exists(idx_path):
+                            context = rag_utils.retrieve_context(idx_path, "overview of document", top_k=5)
+                        type_str = ", ".join(q_types)
+                        prompt = (
+                            f"Generate 3 practice questions for EACH type: {type_str}.\n"
+                            f"Label each, include answer. Format cleanly.\n\nDocument:\n{context}"
+                        )
+                        with st.spinner("Generating..."):
+                            result = call_model_api_single(q_model, prompt)
+                        st.markdown(result)
+                        assigned_ids = [s["id"] for s in all_students if s["username"] in q_students]
+                        if not assigned_ids:
+                            assigned_ids = [None]
+                        for aid in assigned_ids:
+                            database.save_generated_question(
+                                q_doc["id"], ", ".join(q_types), result,
+                                assigned_to=aid
                             )
-                            q_count = st.slider("Number of questions per type", 1, 5, 3)
-                            assign_all = st.checkbox("Assign to all students")
-                            gen_model_names = {m['id']: m['name'] for m in models_list}
-                            gen_model_id = st.selectbox("Model", gen_model_names.keys(),
-                                                        format_func=lambda i: gen_model_names[i],
-                                                        key=f"gen_model_{doc['id']}")
-                            if st.form_submit_button("Generate"):
-                                gen_model = next((m for m in models_list if m['id'] == gen_model_id), None)
-                                if gen_model:
-                                    idx = rag_utils.load_index(doc['index_path'])
-                                    context = rag_utils.retrieve_context(idx, doc['name'], top_n=5)
-                                    assigned_id = None
-                                    all_students = database.get_all_students() if assign_all else []
-                                    for qtype in q_types:
-                                        prompt_text = (
-                                            f"Based on the following document content, generate {q_count} "
-                                            f"{qtype} questions for students studying {doc.get('subject') or 'this subject'}.\n"
-                                            f"Format each question clearly numbered.\n"
-                                            f"For Multiple Choice, include 4 options (A-D) and mark the answer.\n"
-                                            f"For Fill-in-the-blank, use ___ for the blank and provide the answer.\n"
-                                            f"For True/False, state True or False as the answer.\n\n"
-                                            f"Document content:\n{context}"
-                                        )
-                                        with st.spinner(f"Generating {qtype} questions..."):
-                                            raw = call_model_api_single(gen_model, prompt_text)
-                                        if assign_all and all_students:
-                                            for s in all_students:
-                                                database.save_generated_question(
-                                                    doc['id'], qtype, raw, assigned_to=s['id']
-                                                )
-                                        else:
-                                            database.save_generated_question(doc['id'], qtype, raw)
-                                    st.success("Questions generated and saved!")
-                                    st.rerun()
+                        st.success("Saved to database.")
 
-                    # Show saved questions
-                    existing_qs = database.get_questions_for_document(doc['id'])
-                    if existing_qs:
-                        st.markdown("---")
-                        st.subheader("Saved Questions")
-                        for q in existing_qs:
-                            with st.expander(f"[{q['question_type']}] {q['question'][:60]}..."):
-                                st.markdown(q['question'])
-                                if st.button("Delete", key=f"del_q_{q['id']}"):
-                                    database.delete_question(q['id'])
-                                    st.rerun()
 
-    with tab_system:
-        st.header("System Customization")
-        st.info("Customize the login page branding for your school.")
-        
-        sys_settings = load_system_settings()
-        
-        with st.form("sys_branding"):
-            school_name = st.text_input("School / Platform Name", value=sys_settings.get("school_name", "DSE AI Learner Platform"))
-            logo_url = st.text_input("Logo URL (Image Address)", value=sys_settings.get("logo_url", ""), help="Enter a URL to your school logo (png/jpg).")
-            # Or upload logic could be added here but simple URL or local path is easier for now
-            bg_url = st.text_input("Background Image URL", value=sys_settings.get("background_url", ""), help="Enter a URL for the login page background.")
-            
-            if st.form_submit_button("Save Branding"):
-                new_settings = {
-                    "school_name": school_name,
-                    "logo_url": logo_url,
-                    "background_url": bg_url
-                }
-                save_system_settings(new_settings)
-                st.success("System settings updated! Refresh the page to see changes.")
+# ===========================================================================
+# STUDENT WORKSPACE
+# ===========================================================================
+
 def render_student_workspace(user):
-    username = user['username']
-    config = load_config(username)
+    username = user["username"]
+    allowed_models = database.get_allowed_models_for_student(user["id"])
 
-    st.sidebar.title(f"{user['name']}")
-    st.sidebar.markdown("---")
+    with st.sidebar:
+        st.subheader(user["name"])
 
-    menu = st.sidebar.radio(
-        "Navigation",
-        ["Chat", "Notebook", "Profile"],
-        index=0,
-        label_visibility="collapsed"
-    )
-    st.sidebar.markdown("---")
+        if allowed_models:
+            model_options = {m["id"]: m["name"] for m in allowed_models}
+            if "student_model_id" not in st.session_state:
+                st.session_state.student_model_id = allowed_models[0]["id"]
+            selected_model_id = st.selectbox(
+                "Select Model",
+                list(model_options.keys()),
+                format_func=lambda i: model_options[i],
+                index=list(model_options.keys()).index(st.session_state.student_model_id)
+                      if st.session_state.student_model_id in model_options else 0,
+                key="sidebar_model_select"
+            )
+            st.session_state.student_model_id = selected_model_id
+        else:
+            st.warning("No models assigned. Ask your teacher.")
+            selected_model_id = None
 
-    # Model selector
-    allowed_models = database.get_allowed_models_for_student(user['id'])
-    selected_model = None
-    if allowed_models:
-        options = {m['id']: m['name'] for m in allowed_models}
-        sel = config.get('model_id')
-        idx = list(options.keys()).index(sel) if sel in options else 0
-        chosen_id = st.sidebar.selectbox(
-            "Model", list(options.keys()),
-            format_func=lambda i: options[i], index=idx
-        )
-        config['model_id'] = chosen_id
-        save_config(username, config)
-        selected_model = next((m for m in allowed_models if m['id'] == chosen_id), None)
-    else:
-        st.sidebar.write("No models available")
+        if st.button("New Chat", use_container_width=True):
+            st.session_state.messages = []
+            st.session_state.session_id = str(uuid.uuid4())
+            st.rerun()
 
-    if menu == "Profile":
-        render_profile(user)
+        st.markdown("**Chat History**")
+        history_dir = os.path.join(get_user_dir(username), "history")
+        os.makedirs(history_dir, exist_ok=True)
+        files = sorted(glob.glob(os.path.join(history_dir, "*.json")),
+                       key=os.path.getmtime, reverse=True)
+        for fpath in files:
+            sid = os.path.basename(fpath).replace(".json", "")
+            try:
+                with open(fpath, "r", encoding="utf-8") as f:
+                    meta = json.load(f)
+                title = meta.get("title", "Untitled")
+            except Exception:
+                title = "Corrupted"
+            c1, c2 = st.columns([4, 1])
+            with c1:
+                btn_title = title if len(title) < 22 else title[:19] + "..."
+                if st.button(btn_title, key=f"open_{sid}", use_container_width=True, help=title):
+                    msgs, _ = load_session(username, sid)
+                    st.session_state.messages = msgs
+                    st.session_state.session_id = sid
+                    st.rerun()
+            with c2:
+                if st.button("Del", key=f"hdel_{sid}"):
+                    delete_session(username, sid)
+                    if st.session_state.get("session_id") == sid:
+                        st.session_state.messages = []
+                        st.session_state.session_id = str(uuid.uuid4())
+                    st.rerun()
 
-    elif menu == "Chat":
+        st.divider()
+        if st.button("Logout", use_container_width=True):
+            st.session_state.user = None
+            st.rerun()
+
+    # Determine active model object
+    current_model = None
+    if selected_model_id:
+        for m in allowed_models:
+            if m["id"] == selected_model_id:
+                current_model = m
+                break
+
+    tab_chat, tab_practice, tab_notebook = st.tabs(["Chat", "Practice", "Notebook"])
+
+    # ---- CHAT TAB ----
+    with tab_chat:
         if "session_id" not in st.session_state:
             st.session_state.session_id = str(uuid.uuid4())
         if "messages" not in st.session_state:
@@ -688,15 +907,15 @@ def render_student_workspace(user):
             with st.chat_message(msg["role"]):
                 st.markdown(msg["content"])
                 if "image_path" in msg:
-                    img_path = get_image_path(username, msg["image_path"])
-                    if os.path.exists(img_path):
-                        st.image(img_path, width=300)
+                    img_p = get_image_path(username, msg["image_path"])
+                    if os.path.exists(img_p):
+                        st.image(img_p, width=300)
 
-        uploaded_file = st.sidebar.file_uploader(
-            "Attach image", type=["jpg", "png", "jpeg"], label_visibility="visible"
+        uploaded_file = st.file_uploader(
+            "Attach image (optional)", type=["jpg", "png", "jpeg"],
+            label_visibility="visible", key="chat_upload"
         )
-
-        user_input = st.chat_input("Your message...")
+        user_input = st.chat_input("Ask your AI Tutor...")
 
         if user_input:
             with st.chat_message("user"):
@@ -709,15 +928,28 @@ def render_student_workspace(user):
                 msg_data["image_path"] = save_image(username, uploaded_file.getvalue())
             st.session_state.messages.append(msg_data)
 
-            if selected_model:
-                # Build message list for multi-turn (text only for context)
+            response_text = ""
+            if current_model:
+                rag_inject = ""
+                rag_docs = database.get_rag_docs_for_model(current_model["id"])
+                if rag_docs:
+                    for rdoc in rag_docs:
+                        if rdoc.get("index_path") and os.path.exists(rdoc["index_path"]):
+                            snippet = rag_utils.retrieve_context(rdoc["index_path"], user_input)
+                            if snippet:
+                                rag_inject += snippet + "\n\n"
                 chat_messages = [
                     {"role": m["role"], "content": m["content"]}
                     for m in st.session_state.messages
                 ]
-                response_text = call_model_api(selected_model, chat_messages)
+                if rag_inject:
+                    chat_messages[-1]["content"] = (
+                        f"[Relevant document context:]\n{rag_inject.strip()}\n\n"
+                        f"[Student question:] {user_input}"
+                    )
+                response_text = call_model_api(current_model, chat_messages)
             else:
-                response_text = "[No model available. Ask your teacher to grant model access.]"
+                response_text = "[No model assigned. Ask your teacher to grant access.]"
 
             with st.chat_message("assistant"):
                 st.markdown(response_text)
@@ -726,55 +958,118 @@ def render_student_workspace(user):
             st.session_state.last_qa = (user_input, response_text)
             st.rerun()
 
-        if "last_qa" in st.session_state and selected_model:
+        if "last_qa" in st.session_state and current_model:
             q, a = st.session_state.last_qa
             if st.button("Add Last Q&A to Notebook"):
                 with st.spinner("Summarizing..."):
                     summary = call_model_api_single(
-                        selected_model,
+                        current_model,
                         f"Summarize the key concept or mistake in 1-2 sentences.\nQ: {q}\nA: {a}"
                     )
                     add_to_notebook(username, q, a, summary)
                 st.success("Added to Notebook!")
                 del st.session_state.last_qa
 
-    elif menu == "Notebook":
+    # ---- PRACTICE TAB ----
+    with tab_practice:
+        st.header("Practice Questions")
+
+        assigned_qs = database.get_questions_for_student(user["id"])
+        if assigned_qs:
+            st.subheader("Assigned by Teacher")
+            for q in assigned_qs:
+                with st.expander(f"[{q['question_type']}] {q.get('doc_name', '')}"):
+                    st.markdown(q["question"])
+            st.divider()
+
+        st.subheader("Generate from My Notebook")
+        notebook = load_notebook(username)
+        if not notebook:
+            st.info("Your notebook is empty. Add entries from the Chat tab first.")
+        else:
+            notebook.sort(key=lambda x: x["timestamp"], reverse=True)
+            options = {e["id"]: f"{e['title']} ({e['timestamp'][:10]})" for e in notebook}
+            selected_ids = st.multiselect(
+                "Select entries:",
+                list(options.keys()),
+                format_func=lambda x: options[x]
+            )
+            q_types = st.multiselect(
+                "Question types",
+                ["Multiple Choice", "Fill-in-the-blank", "Short Answer", "True/False"],
+                default=["Multiple Choice", "Short Answer"]
+            )
+            if st.button("Generate Questions"):
+                if not selected_ids:
+                    st.warning("Select at least one entry.")
+                elif not q_types:
+                    st.warning("Select at least one question type.")
+                elif not current_model:
+                    st.warning("No model available.")
+                else:
+                    selected_entries = [n for n in notebook if n["id"] in selected_ids]
+                    context_text = "".join(
+                        f"\n---\nTopic: {e['title']}\nKey Point: {e.get('summary','')}\n"
+                        f"Original Q: {e['question']}\n"
+                        for e in selected_entries
+                    )
+                    type_str = ", ".join(q_types)
+                    prompt = (
+                        f"Generate 3 practice questions for EACH type: {type_str}.\n"
+                        f"Number each. Label type. Include answer.\n"
+                        f"Multiple Choice: 4 options (A-D), mark correct.\n"
+                        f"Fill-in-the-blank: use ___, provide answer.\n"
+                        f"True/False: state verdict.\n\nNotebook entries:\n{context_text}"
+                    )
+                    with st.spinner("Generating..."):
+                        result = call_model_api_single(current_model, prompt)
+                    st.markdown(result)
+
+    # ---- NOTEBOOK TAB ----
+    with tab_notebook:
         st.header("Your Notebook")
         notebook = load_notebook(username)
         if not notebook:
-            st.info("No entries yet.")
+            st.info("No entries yet. Add from Chat tab.")
         else:
-            notebook.sort(key=lambda x: x['timestamp'], reverse=True)
+            notebook.sort(key=lambda x: x["timestamp"], reverse=True)
             for entry in notebook:
                 with st.expander(f"{entry['title']} - {entry['timestamp'][:16]}"):
-                    st.write("**Question:**")
-                    st.write(entry['question'])
-                    st.write("**Answer:**")
-                    st.write(entry['answer'])
-                    if entry.get('summary'):
-                        st.write("**Summary:**")
-                        st.write(entry['summary'])
-                    if st.button("Delete", key=f"delete_note_{entry['id']}"):
-                        delete_notebook_entry(username, entry['id'])
+                    new_title = st.text_input("Title", value=entry["title"],
+                                              key=f"nbtitle_{entry['id']}")
+                    if new_title != entry["title"]:
+                        update_notebook_entry_title(username, entry["id"], new_title)
                         st.rerun()
-                
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.markdown("**Question**")
+                        st.info(entry["question"])
+                    with col2:
+                        st.markdown("**Answer**")
+                        st.info(entry["answer"])
+                    if entry.get("summary"):
+                        st.markdown("**Key Learning**")
+                        st.warning(entry["summary"])
+                    if st.button("Delete Entry", key=f"nbdel_{entry['id']}"):
+                        delete_notebook_entry(username, entry["id"])
+                        st.rerun()
 
-# --- Main Entry ---
-
-if "user" not in st.session_state:
-    st.session_state.user = None
-
-if st.session_state.user:
-    # Sidebar Logout
-    with st.sidebar:
-        if st.button("Logout"):
-            st.session_state.user = None
+        if st.button("Refresh"):
             st.rerun()
-            
+
+
+# ===========================================================================
+# MAIN ROUTER
+# ===========================================================================
+
+if st.session_state.user is None:
+    render_login()
+else:
     user = st.session_state.user
-    if user['role'] == 'teacher':
-        render_teacher_dashboard()
+    role = user.get("role")
+    if role == "admin":
+        render_admin_dashboard(user)
+    elif role == "teacher":
+        render_teacher_dashboard(user)
     else:
         render_student_workspace(user)
-else:
-    render_login()
