@@ -1,0 +1,13 @@
+feat: professional UI redesign with analytics dashboard and chat logging
+
+- app.py: complete rewrite (1477 lines) with professional CSS + Inter font
+- Admin: paginated user list (50/page), search, inline Edit/Ban/Delete, st.dialog popups for Add/Edit/Delete/CSV import
+- Admin: System Settings with file-upload + URL for logo and background
+- Teacher: Analytics Dashboard with echarts charts (daily messages, tokens, top words, per-student)
+- Teacher: Chat History Browser with AI session analysis button
+- Teacher: Test Connection button per model
+- Teacher: Create Class via st.dialog
+- Teacher + Student: Settings sidebar item (password + profile change)
+- Student: chat logging via database.log_message on every message
+- database.py: chat_logs table, analytics functions, system image helpers
+- requirements.txt: streamlit>=1.37.0, echarts, shadcn-ui, lottie
