@@ -156,6 +156,21 @@ def init_db():
         )
     ''')
 
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS chat_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            session_id TEXT NOT NULL,
+            model_id INTEGER,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            token_estimate INTEGER DEFAULT 0,
+            created_at TEXT,
+            FOREIGN KEY(user_id) REFERENCES users(id),
+            FOREIGN KEY(model_id) REFERENCES models(id)
+        )
+    ''')
+
     conn.commit()
 
     # Migrations for existing DBs
@@ -178,6 +193,7 @@ def _migrate(c, conn):
         ("models", "created_by", "ALTER TABLE models ADD COLUMN created_by INTEGER"),
         ("student_model_access", "override_prompt", "ALTER TABLE student_model_access ADD COLUMN override_prompt TEXT"),
         ("documents", "folder_id", "ALTER TABLE documents ADD COLUMN folder_id INTEGER"),
+        ("chat_logs", "token_estimate", "ALTER TABLE chat_logs ADD COLUMN token_estimate INTEGER DEFAULT 0"),
     ]
     for table, col, sql in migrations:
         try:
@@ -905,3 +921,213 @@ def cleanup_zombies():
                 os.kill(pid, 0)
             except OSError:
                 stop_deployment_record(row["user_id"])
+
+
+# ---------------------------------------------------------------------------
+# Chat logging
+# ---------------------------------------------------------------------------
+
+def log_message(user_id, session_id, model_id, role, content):
+    """Store a single chat message for analytics."""
+    token_estimate = int(len(content.split()) * 1.3)
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute(
+        "INSERT INTO chat_logs (user_id, session_id, model_id, role, content, token_estimate, created_at) "
+        "VALUES (?,?,?,?,?,?,?)",
+        (user_id, session_id, model_id, role, content, token_estimate, datetime.now().isoformat())
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_chat_logs_for_student(user_id, limit=200):
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    c.execute(
+        "SELECT * FROM chat_logs WHERE user_id=? ORDER BY created_at DESC LIMIT ?",
+        (user_id, limit)
+    )
+    rows = c.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_chat_logs_for_class(class_id, limit=1000):
+    """Return all logs for students enrolled in a class."""
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    c.execute(
+        "SELECT cl.*, u.username FROM chat_logs cl "
+        "JOIN class_students cs ON cl.user_id = cs.student_id "
+        "JOIN users u ON cl.user_id = u.id "
+        "WHERE cs.class_id=? ORDER BY cl.created_at DESC LIMIT ?",
+        (class_id, limit)
+    )
+    rows = c.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_analytics_daily_counts(user_ids, days=14):
+    """
+    Returns list of {date, messages, tokens} for the past N days.
+    user_ids: list of ints (filter to these users), or None for all.
+    """
+    from datetime import timedelta
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+    if user_ids:
+        placeholders = ",".join("?" * len(user_ids))
+        c.execute(
+            f"SELECT substr(created_at,1,10) as day, COUNT(*) as messages, "
+            f"SUM(token_estimate) as tokens FROM chat_logs "
+            f"WHERE role='user' AND user_id IN ({placeholders}) AND created_at>=? "
+            f"GROUP BY day ORDER BY day",
+            (*user_ids, cutoff)
+        )
+    else:
+        c.execute(
+            "SELECT substr(created_at,1,10) as day, COUNT(*) as messages, "
+            "SUM(token_estimate) as tokens FROM chat_logs "
+            "WHERE role='user' AND created_at>=? GROUP BY day ORDER BY day",
+            (cutoff,)
+        )
+    rows = c.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_analytics_per_student(class_id):
+    """Returns [{username, messages, tokens}] for students in a class."""
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    c.execute(
+        "SELECT u.username, COUNT(cl.id) as messages, COALESCE(SUM(cl.token_estimate),0) as tokens "
+        "FROM class_students cs "
+        "JOIN users u ON cs.student_id = u.id "
+        "LEFT JOIN chat_logs cl ON cl.user_id = cs.student_id AND cl.role='user' "
+        "WHERE cs.class_id=? GROUP BY u.id ORDER BY messages DESC",
+        (class_id,)
+    )
+    rows = c.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_analytics_top_words(user_ids, limit=20):
+    """Returns [(word, count)] top words from student messages."""
+    import re
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    if user_ids:
+        placeholders = ",".join("?" * len(user_ids))
+        c.execute(
+            f"SELECT content FROM chat_logs WHERE role='user' AND user_id IN ({placeholders})",
+            tuple(user_ids)
+        )
+    else:
+        c.execute("SELECT content FROM chat_logs WHERE role='user'")
+    rows = c.fetchall()
+    conn.close()
+    stop = {"the","a","an","is","it","in","on","at","to","of","and","or","for",
+            "with","this","that","i","my","me","can","you","what","how","why",
+            "do","does","did","be","are","was","were","please","help","have",
+            "has","had","will","would","could","should","if","so","about","from"}
+    freq = {}
+    for (text,) in rows:
+        for w in re.findall(r"[a-zA-Z]{3,}", text.lower()):
+            if w not in stop:
+                freq[w] = freq.get(w, 0) + 1
+    sorted_words = sorted(freq.items(), key=lambda x: x[1], reverse=True)[:limit]
+    return sorted_words
+
+
+def get_analytics_totals(user_ids):
+    """Returns {total_messages, total_tokens, total_sessions} for given user_ids."""
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    if user_ids:
+        placeholders = ",".join("?" * len(user_ids))
+        c.execute(
+            f"SELECT COUNT(*) as messages, COALESCE(SUM(token_estimate),0) as tokens, "
+            f"COUNT(DISTINCT session_id) as sessions FROM chat_logs "
+            f"WHERE role='user' AND user_id IN ({placeholders})",
+            tuple(user_ids)
+        )
+    else:
+        c.execute(
+            "SELECT COUNT(*) as messages, COALESCE(SUM(token_estimate),0) as tokens, "
+            "COUNT(DISTINCT session_id) as sessions FROM chat_logs WHERE role='user'"
+        )
+    row = c.fetchone()
+    conn.close()
+    return dict(row) if row else {"messages": 0, "tokens": 0, "sessions": 0}
+
+
+def get_sessions_for_student(user_id):
+    """Return distinct sessions with first message preview."""
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    c.execute(
+        "SELECT session_id, MIN(created_at) as started_at, COUNT(*) as msg_count, "
+        "MAX(CASE WHEN role='user' THEN content ELSE '' END) as last_user_msg "
+        "FROM chat_logs WHERE user_id=? GROUP BY session_id ORDER BY started_at DESC",
+        (user_id,)
+    )
+    rows = c.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# System image helpers
+# ---------------------------------------------------------------------------
+
+SYSTEM_DIR = os.path.join("data", "system")
+
+def save_system_image(name, file_bytes, ext):
+    """Save an uploaded image (bytes) to data/system/{name}.{ext}. Returns path."""
+    os.makedirs(SYSTEM_DIR, exist_ok=True)
+    # Remove old files with same name but different ext
+    for f in os.listdir(SYSTEM_DIR):
+        if f.startswith(name + "."):
+            try:
+                os.remove(os.path.join(SYSTEM_DIR, f))
+            except OSError:
+                pass
+    path = os.path.join(SYSTEM_DIR, f"{name}.{ext}")
+    with open(path, "wb") as fh:
+        fh.write(file_bytes)
+    return path
+
+
+def get_system_image_path(name):
+    """Return path to data/system/{name}.* if it exists, else None."""
+    if not os.path.exists(SYSTEM_DIR):
+        return None
+    for f in os.listdir(SYSTEM_DIR):
+        base, ext = os.path.splitext(f)
+        if base == name and ext.lower() in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"):
+            return os.path.join(SYSTEM_DIR, f)
+    return None
+
+
+def get_system_image_b64(name):
+    """Return base64-encoded data URI string for CSS embedding, or None."""
+    import base64
+    import mimetypes
+    path = get_system_image_path(name)
+    if not path:
+        return None
+    mime = mimetypes.guess_type(path)[0] or "image/png"
+    with open(path, "rb") as fh:
+        data = base64.b64encode(fh.read()).decode()
+    return f"data:{mime};base64,{data}"
