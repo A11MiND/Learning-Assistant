@@ -27,20 +27,22 @@ def temp_db(monkeypatch):
 
 
 def test_model_crud():
-    assert create_model('m1', 'http://example.com')
+    assert create_model('m1', 'test-model', 'http://example.com')
     models = get_models()
     assert len(models) == 1
     m = models[0]
     assert m['name'] == 'm1'
-    update_model(m['id'], name='mx')
+    assert m['model_name'] == 'test-model'
+    update_model(m['id'], name='mx', model_name='updated-model')
     models = get_models()
     assert models[0]['name'] == 'mx'
+    assert models[0]['model_name'] == 'updated-model'
     delete_model(m['id'])
     assert get_models() == []
 
 
 def test_student_access():
-    create_model('m1', 'http://example.com')
+    create_model('m1', 'test-model', 'http://example.com')
     m = get_models()[0]
     create_user('stu', 'pw', 'student', 'Stu')
     # get student id

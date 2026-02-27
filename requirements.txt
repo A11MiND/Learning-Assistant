@@ -1,15 +1,6 @@
-# 基础框架
 streamlit>=1.30.0
 requests>=2.31.0
-
-# 核心 AI 与 数据处理（根据你代码实际用到的取消注释）
-langchain
-langchain-core
-openai  # 如果你用了 OpenAI
-pandas
-numpy
-
-# 你的日志里提到的特定包
-streamlit-paste-button==0.1.2
-pydantic>=2.0.0
+openai>=1.0.0
+pypdf>=3.0.0
+python-docx>=1.0.0
 python-dotenv

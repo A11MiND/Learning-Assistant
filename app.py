@@ -10,26 +10,44 @@ import subprocess
 import socket
 import time
 import database
+import rag_utils
+from openai import OpenAI
 
-# ---- model API helper ----
-def call_model_api(model, user_input):
-    """Send a request to the configured model with system prompt."""
-    # model is dict with keys: api_url, api_key, system_prompt
-    prompt = user_input
+# ---- OpenAI-compatible model API helpers ----
+
+def call_model_api(model, messages):
+    """
+    Multi-turn chat call using the OpenAI client library.
+    model: dict with api_url, api_key, model_name, system_prompt, override_prompt (optional)
+    messages: list of {"role": ..., "content": ...} (user + assistant turns, no system msg)
+    Returns: response string
+    """
+    client = OpenAI(
+        api_key=model.get("api_key") or "not-required",
+        base_url=model["api_url"]
+    )
+    system_parts = []
     if model.get("system_prompt"):
-        prompt = model["system_prompt"] + "\n\n" + user_input
-    headers = {"Content-Type": "application/json"}
-    if model.get("api_key"):
-        headers["Authorization"] = f"Bearer {model['api_key']}"
-    payload = {"prompt": prompt}
+        system_parts.append(model["system_prompt"])
+    if model.get("override_prompt"):
+        system_parts.append(model["override_prompt"])
+    full_messages = []
+    if system_parts:
+        full_messages.append({"role": "system", "content": "\n\n".join(system_parts)})
+    full_messages.extend(messages)
     try:
-        resp = requests.post(model["api_url"], json=payload, headers=headers, timeout=60)
-        resp.raise_for_status()
-        data = resp.json()
-        # support common keys
-        return data.get("response") or data.get("output") or data.get("text") or str(data)
+        resp = client.chat.completions.create(
+            model=model.get("model_name") or "gpt-3.5-turbo",
+            messages=full_messages,
+        )
+        return resp.choices[0].message.content
     except Exception as e:
         return f"[Model Error]: {e}"
+
+
+def call_model_api_single(model, prompt):
+    """Convenience wrapper for a single-turn call (summaries, indexing, etc.)."""
+    return call_model_api(model, [{"role": "user", "content": prompt}])
 
 # --- Helper Functions ---
 
@@ -109,6 +127,77 @@ def save_config(username, config):
     config_file = os.path.join(get_user_dir(username), "config.json")
     with open(config_file, "w", encoding="utf-8") as f:
         json.dump(config, f, indent=2)
+
+# --- Student workspace helper functions ---
+
+def save_image(username, image_bytes):
+    images_dir = os.path.join(get_user_dir(username), "images")
+    os.makedirs(images_dir, exist_ok=True)
+    filename = f"{uuid.uuid4()}.png"
+    file_path = os.path.join(images_dir, filename)
+    with open(file_path, "wb") as f:
+        f.write(image_bytes)
+    return filename
+
+def get_image_path(username, filename):
+    return os.path.join(get_user_dir(username), "images", filename)
+
+def get_notebook_path(username):
+    return os.path.join(get_user_dir(username), "notebook.json")
+
+def load_notebook(username):
+    path = get_notebook_path(username)
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return []
+
+def save_notebook(username, data):
+    path = get_notebook_path(username)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+def add_to_notebook(username, question, answer, summary=None):
+    notebook = load_notebook(username)
+    entry = {
+        "id": str(uuid.uuid4()),
+        "timestamp": datetime.now().isoformat(),
+        "title": (summary[:50] if summary else question[:50]),
+        "question": question,
+        "answer": answer,
+        "summary": summary,
+    }
+    notebook.append(entry)
+    save_notebook(username, notebook)
+
+def delete_notebook_entry(username, entry_id):
+    notebook = load_notebook(username)
+    notebook = [n for n in notebook if n["id"] != entry_id]
+    save_notebook(username, notebook)
+
+def save_session(username, session_id, messages):
+    if not messages:
+        return
+    title = "New Chat"
+    for msg in messages:
+        if msg["role"] == "user":
+            title = msg["content"][:30] + ("..." if len(msg["content"]) > 30 else "")
+            break
+    history_dir = os.path.join(get_user_dir(username), "history")
+    os.makedirs(history_dir, exist_ok=True)
+    file_path = os.path.join(history_dir, f"{session_id}.json")
+    messages_to_save = []
+    for msg in messages:
+        mc = msg.copy()
+        mc.pop("image_data", None)
+        messages_to_save.append(mc)
+    with open(file_path, "w", encoding="utf-8") as f:
+        json.dump({"id": session_id, "title": title,
+                   "updated_at": datetime.now().isoformat(),
+                   "messages": messages_to_save}, f, ensure_ascii=False, indent=2)
 
 def get_free_port():
     """Find a free port starting from 8502."""
@@ -228,8 +317,10 @@ def render_profile(user):
 
 def render_teacher_dashboard():
     st.title("Teacher Dashboard")
-    
-    tab_students, tab_models, tab_system = st.tabs(["Student Management", "Model Management", "System Customization"])
+
+    tab_students, tab_models, tab_kb, tab_system = st.tabs(
+        ["Student Management", "Model Management", "Knowledge Base", "System Customization"]
+    )
     
     with tab_students:
         if st.button("Refresh List"):
@@ -330,57 +421,208 @@ def render_teacher_dashboard():
                                     st.rerun()
                 # Model access section
                 with st.expander("Model Access"):
-                    allowed = {m['id'] for m in database.get_allowed_models_for_student(s['id'])}
+                    # Fetch current access rows so we can show override_prompt too
+                    access_map = {}
+                    for row in database.get_allowed_models_for_student(s['id']):
+                        access_map[row['id']] = row
                     for m in all_models:
-                        checked = m['id'] in allowed
+                        checked = m['id'] in access_map
                         new_val = st.checkbox(m['name'], value=checked, key=f"access_{s['id']}_{m['id']}")
+                        if new_val:
+                            override = st.text_area(
+                                "Override instruction for this student + model",
+                                value=access_map.get(m['id'], {}).get('override_prompt') or "",
+                                key=f"override_{s['id']}_{m['id']}",
+                                help="Appended to the model's system prompt only for this student."
+                            )
                         if new_val != checked:
-                            database.set_student_model_access(s['id'], m['id'], 1 if new_val else 0)
+                            op = override if new_val else None
+                            database.set_student_model_access(s['id'], m['id'], 1 if new_val else 0, op)
                             st.rerun()
+                        elif new_val:
+                            old_op = access_map.get(m['id'], {}).get('override_prompt') or ""
+                            if override != old_op:
+                                database.set_student_model_access(s['id'], m['id'], 1, override or None)
+                                st.rerun()
                 st.divider()
 
     with tab_models:
         st.header("Model Management")
-        st.info("Add, edit or remove large language models and their system prompts.")
-        
-        # list existing models
+        st.info("Add, edit or remove LLM endpoints. Model ID is the identifier sent in each API request (e.g. gpt-4o, deepseek-chat, Qwen/Qwen2.5-72B-Instruct).")
+
         models = database.get_models()
         if models:
             for m in models:
-                with st.expander(f"{m['name']} (ID {m['id']})"):
+                with st.expander(f"{m['name']} — {m.get('model_name','')}"):
                     with st.form(key=f"edit_model_{m['id']}"):
                         name = st.text_input("Display Name", value=m['name'])
-                        url = st.text_input("API URL", value=m['api_url'])
-                        key = st.text_input("API Key", value=m.get('api_key',''))
-                        prompt = st.text_area("System Prompt", value=m.get('system_prompt',''))
+                        model_name = st.text_input("Model ID", value=m.get('model_name', ''),
+                                                   help="e.g. gpt-4o, deepseek-chat, Qwen/Qwen2.5-72B-Instruct")
+                        url = st.text_input("API Base URL", value=m['api_url'],
+                                            help="e.g. https://api.openai.com/v1 or https://api.siliconflow.cn/v1")
+                        key = st.text_input("API Key", value=m.get('api_key', ''))
+                        prompt = st.text_area("System Prompt", value=m.get('system_prompt', ''),
+                                             help="Invisible to students. Use this to enforce pedagogical rules, e.g. guide thinking instead of giving direct answers.")
                         col_a, col_b = st.columns(2)
                         with col_a:
                             if st.form_submit_button("Save Changes"):
-                                database.update_model(m['id'], name=name, api_url=url, api_key=key or None, system_prompt=prompt or None)
+                                database.update_model(m['id'], name=name, model_name=model_name,
+                                                     api_url=url, api_key=key or None,
+                                                     system_prompt=prompt or None)
                                 st.success("Updated")
-                                st.experimental_rerun()
+                                st.rerun()
                         with col_b:
                             if st.form_submit_button("Delete Model", type="primary"):
                                 database.delete_model(m['id'])
-                                st.experimental_rerun()
+                                st.rerun()
         else:
             st.write("No models defined yet.")
-        
+
         st.markdown("---")
         st.subheader("Add New Model")
         with st.form("add_model"):
             name = st.text_input("Display Name")
-            url = st.text_input("API URL")
+            model_name = st.text_input("Model ID", help="e.g. gpt-4o, deepseek-chat, Qwen/Qwen2.5-72B-Instruct")
+            url = st.text_input("API Base URL", help="e.g. https://api.openai.com/v1")
             key = st.text_input("API Key (optional)")
-            prompt = st.text_area("System Prompt (optional)")
+            prompt = st.text_area("System Prompt (optional)",
+                                  help="Pedagogical instructions invisible to students.")
             if st.form_submit_button("Create Model"):
-                if name and url:
-                    database.create_model(name, url, api_key=key or None, system_prompt=prompt or None)
+                if name and model_name and url:
+                    database.create_model(name, model_name, url, api_key=key or None,
+                                          system_prompt=prompt or None)
                     st.success("Model created")
-                    st.experimental_rerun()
+                    st.rerun()
                 else:
-                    st.error("Name and URL are required")
+                    st.error("Display Name, Model ID and API Base URL are required")
     
+    with tab_kb:
+        st.header("Knowledge Base")
+        st.info("Upload subject materials. AI can generate practice questions from them and students can use them as reference context in Chat.")
+
+        # Upload section
+        with st.expander("Upload New Document", expanded=True):
+            with st.form("upload_doc"):
+                doc_name = st.text_input("Document Name / Title")
+                subject = st.text_input("Subject (optional)", placeholder="e.g. Biology, History")
+                uploaded = st.file_uploader("Choose file", type=["pdf", "docx", "txt"])
+                if st.form_submit_button("Upload"):
+                    if uploaded and doc_name:
+                        docs_dir = os.path.join("data", "system", "docs")
+                        os.makedirs(docs_dir, exist_ok=True)
+                        fname = f"{uuid.uuid4()}_{uploaded.name}"
+                        fpath = os.path.join(docs_dir, fname)
+                        with open(fpath, "wb") as f:
+                            f.write(uploaded.getvalue())
+                        ft = uploaded.name.rsplit(".", 1)[-1].lower()
+                        database.save_document(doc_name, fpath, ft, subject=subject or None)
+                        st.success(f"Uploaded: {doc_name}")
+                        st.rerun()
+                    else:
+                        st.error("Please enter a name and choose a file.")
+
+        # List documents
+        docs = database.get_documents()
+        if not docs:
+            st.write("No documents uploaded yet.")
+        else:
+            for doc in docs:
+                with st.expander(f"{doc['name']}  [{doc['index_status']}]"):
+                    st.write(f"File: `{os.path.basename(doc['file_path'])}`  |  Type: {doc['file_type']}  |  Subject: {doc.get('subject') or '-'}")
+
+                    col_idx, col_del = st.columns([2, 1])
+                    models_list = database.get_models()
+
+                    with col_idx:
+                        if doc['index_status'] != 'indexed':
+                            if models_list:
+                                idx_model_names = {m['id']: m['name'] for m in models_list}
+                                idx_model_id = st.selectbox("Model for indexing", idx_model_names.keys(),
+                                                            format_func=lambda i: idx_model_names[i],
+                                                            key=f"idx_model_{doc['id']}")
+                                if st.button("Build Index", key=f"build_idx_{doc['id']}"):
+                                    idx_model = next((m for m in models_list if m['id'] == idx_model_id), None)
+                                    with st.spinner("Building page index..."):
+                                        index = rag_utils.build_page_index(
+                                            doc['file_path'], doc['file_type'], model=idx_model
+                                        )
+                                        idx_path = rag_utils.save_index(doc['id'], index)
+                                        database.update_document_index(doc['id'], idx_path)
+                                    st.success(f"Indexed {index['page_count']} pages")
+                                    st.rerun()
+                            else:
+                                st.warning("Add a model first to enable AI indexing.")
+                        else:
+                            idx = rag_utils.load_index(doc['index_path'])
+                            pages = idx['page_count'] if idx else '?'
+                            st.success(f"Index ready — {pages} pages")
+
+                    with col_del:
+                        if st.button("Delete Document", key=f"del_doc_{doc['id']}", type="primary"):
+                            if doc.get('index_path') and os.path.exists(doc['index_path']):
+                                os.remove(doc['index_path'])
+                            if os.path.exists(doc['file_path']):
+                                os.remove(doc['file_path'])
+                            database.delete_document(doc['id'])
+                            st.rerun()
+
+                    # Question generation
+                    if doc['index_status'] == 'indexed':
+                        st.markdown("---")
+                        st.subheader("Generate Questions")
+                        with st.form(key=f"gen_q_{doc['id']}"):
+                            q_types = st.multiselect(
+                                "Question types",
+                                ["Multiple Choice", "Fill-in-the-blank", "Short Answer", "True/False"],
+                                default=["Multiple Choice", "Short Answer"]
+                            )
+                            q_count = st.slider("Number of questions per type", 1, 5, 3)
+                            assign_all = st.checkbox("Assign to all students")
+                            gen_model_names = {m['id']: m['name'] for m in models_list}
+                            gen_model_id = st.selectbox("Model", gen_model_names.keys(),
+                                                        format_func=lambda i: gen_model_names[i],
+                                                        key=f"gen_model_{doc['id']}")
+                            if st.form_submit_button("Generate"):
+                                gen_model = next((m for m in models_list if m['id'] == gen_model_id), None)
+                                if gen_model:
+                                    idx = rag_utils.load_index(doc['index_path'])
+                                    context = rag_utils.retrieve_context(idx, doc['name'], top_n=5)
+                                    assigned_id = None
+                                    all_students = database.get_all_students() if assign_all else []
+                                    for qtype in q_types:
+                                        prompt_text = (
+                                            f"Based on the following document content, generate {q_count} "
+                                            f"{qtype} questions for students studying {doc.get('subject') or 'this subject'}.\n"
+                                            f"Format each question clearly numbered.\n"
+                                            f"For Multiple Choice, include 4 options (A-D) and mark the answer.\n"
+                                            f"For Fill-in-the-blank, use ___ for the blank and provide the answer.\n"
+                                            f"For True/False, state True or False as the answer.\n\n"
+                                            f"Document content:\n{context}"
+                                        )
+                                        with st.spinner(f"Generating {qtype} questions..."):
+                                            raw = call_model_api_single(gen_model, prompt_text)
+                                        if assign_all and all_students:
+                                            for s in all_students:
+                                                database.save_generated_question(
+                                                    doc['id'], qtype, raw, assigned_to=s['id']
+                                                )
+                                        else:
+                                            database.save_generated_question(doc['id'], qtype, raw)
+                                    st.success("Questions generated and saved!")
+                                    st.rerun()
+
+                    # Show saved questions
+                    existing_qs = database.get_questions_for_document(doc['id'])
+                    if existing_qs:
+                        st.markdown("---")
+                        st.subheader("Saved Questions")
+                        for q in existing_qs:
+                            with st.expander(f"[{q['question_type']}] {q['question'][:60]}..."):
+                                st.markdown(q['question'])
+                                if st.button("Delete", key=f"del_q_{q['id']}"):
+                                    database.delete_question(q['id'])
+                                    st.rerun()
+
     with tab_system:
         st.header("System Customization")
         st.info("Customize the login page branding for your school.")
@@ -404,35 +646,39 @@ def render_teacher_dashboard():
 def render_student_workspace(user):
     username = user['username']
     config = load_config(username)
-    
+
     st.sidebar.title(f"{user['name']}")
-    
-    # Menu UI (simplified: chat & notebook & profile)
     st.sidebar.markdown("---")
+
     menu = st.sidebar.radio(
-        "Navigation", 
+        "Navigation",
         ["Chat", "Notebook", "Profile"],
         index=0,
         label_visibility="collapsed"
     )
     st.sidebar.markdown("---")
-    
-    # model selection dropdown for students
+
+    # Model selector
     allowed_models = database.get_allowed_models_for_student(user['id'])
+    selected_model = None
     if allowed_models:
-        sel = config.get('model_id')
         options = {m['id']: m['name'] for m in allowed_models}
-        chosen = st.sidebar.selectbox("Model", options.keys(), format_func=lambda i: options[i], index=list(options.keys()).index(sel) if sel in options else 0)
-        config['model_id'] = chosen
+        sel = config.get('model_id')
+        idx = list(options.keys()).index(sel) if sel in options else 0
+        chosen_id = st.sidebar.selectbox(
+            "Model", list(options.keys()),
+            format_func=lambda i: options[i], index=idx
+        )
+        config['model_id'] = chosen_id
         save_config(username, config)
+        selected_model = next((m for m in allowed_models if m['id'] == chosen_id), None)
     else:
         st.sidebar.write("No models available")
-    
+
     if menu == "Profile":
         render_profile(user)
-    
+
     elif menu == "Chat":
-        # Chat Logic
         if "session_id" not in st.session_state:
             st.session_state.session_id = str(uuid.uuid4())
         if "messages" not in st.session_state:
@@ -445,17 +691,10 @@ def render_student_workspace(user):
                     img_path = get_image_path(username, msg["image_path"])
                     if os.path.exists(img_path):
                         st.image(img_path, width=300)
-                elif "image" in msg:
-                    st.image(msg["image"], width=300)
-                elif msg.get("has_image"):
-                    st.caption("[Image from history]")
 
-        with st.popover("Attach Image", help="Attach an image file"):
-            uploaded_file = st.file_uploader("Upload Image", type=["jpg", "png", "jpeg"], label_visibility="collapsed")
-
-        if uploaded_file:
-            with st.expander("Image Attached", expanded=True):
-                st.image(uploaded_file, width=150)
+        uploaded_file = st.sidebar.file_uploader(
+            "Attach image", type=["jpg", "png", "jpeg"], label_visibility="visible"
+        )
 
         user_input = st.chat_input("Your message...")
 
@@ -464,29 +703,21 @@ def render_student_workspace(user):
                 st.markdown(user_input)
                 if uploaded_file:
                     st.image(uploaded_file, width=300)
+
             msg_data = {"role": "user", "content": user_input}
             if uploaded_file:
-                image_bytes = uploaded_file.getvalue()
-                filename = save_image(username, image_bytes)
-                msg_data["image_path"] = filename
+                msg_data["image_path"] = save_image(username, uploaded_file.getvalue())
             st.session_state.messages.append(msg_data)
 
-            # determine model
-            model = None
-            if config.get('model_id'):
-                models = database.get_models()
-                for m in models:
-                    if m['id'] == config['model_id']:
-                        model = m
-                        break
-            if not model and allowed_models:
-                model = allowed_models[0]
-
-            response_text = ""
-            if model:
-                response_text = call_model_api(model, user_input)
+            if selected_model:
+                # Build message list for multi-turn (text only for context)
+                chat_messages = [
+                    {"role": m["role"], "content": m["content"]}
+                    for m in st.session_state.messages
+                ]
+                response_text = call_model_api(selected_model, chat_messages)
             else:
-                response_text = "[No model available]"
+                response_text = "[No model available. Ask your teacher to grant model access.]"
 
             with st.chat_message("assistant"):
                 st.markdown(response_text)
@@ -495,17 +726,18 @@ def render_student_workspace(user):
             st.session_state.last_qa = (user_input, response_text)
             st.rerun()
 
-        if "last_qa" in st.session_state:
+        if "last_qa" in st.session_state and selected_model:
             q, a = st.session_state.last_qa
             if st.button("Add Last Q&A to Notebook"):
-                with st.spinner("Analyzing and summarizing..."):
-                    summary_prompt = f"Analyze this student's question and the answer. Summarize the key mistake or concept." \
-                                     f"\n\nQuestion: {q}\nAnswer: {a}"
-                    summary = call_model_api(model, summary_prompt) if model else ""
+                with st.spinner("Summarizing..."):
+                    summary = call_model_api_single(
+                        selected_model,
+                        f"Summarize the key concept or mistake in 1-2 sentences.\nQ: {q}\nA: {a}"
+                    )
                     add_to_notebook(username, q, a, summary)
                 st.success("Added to Notebook!")
                 del st.session_state.last_qa
-    
+
     elif menu == "Notebook":
         st.header("Your Notebook")
         notebook = load_notebook(username)
@@ -525,36 +757,6 @@ def render_student_workspace(user):
                     if st.button("Delete", key=f"delete_note_{entry['id']}"):
                         delete_notebook_entry(username, entry['id'])
                         st.rerun()
-
-            # Workspace selection dropdown
-            workspace_options = st.session_state.get('allm_workspaces', {})
-            current_slug = config.get("slug", "default")
-            
-            # If current slug not in loaded list, add it manually to options so it shows up
-            if current_slug and current_slug not in workspace_options:
-                workspace_options[current_slug] = f"{current_slug} (Current)"
-                
-            selected_slug_key = st.selectbox(
-                "Select Workspace", 
-                options=list(workspace_options.keys()),
-                format_func=lambda x: workspace_options[x],
-                index=list(workspace_options.keys()).index(current_slug) if current_slug in workspace_options else 0
-            ) 
-            allm_slug = selected_slug_key if selected_slug_key else st.text_input("Workspace Slug (Manual)", value=current_slug)
-            
-            st.markdown("---")
-            if st.form_submit_button("Save Configuration", type="primary"):
-                new_config = {
-                    "app_title": app_title,
-                    "system_prompt": system_prompt,
-                    "ollama_url": ollama_url,
-                    "ollama_model": ollama_model,
-                    "url": allm_url,
-                    "api_key": allm_key,
-                    "slug": allm_slug
-                }
-                save_config(username, new_config)
-                st.success("Configuration Saved!")
                 
 
 # --- Main Entry ---
