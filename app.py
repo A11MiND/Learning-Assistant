@@ -1339,7 +1339,7 @@ def _teacher_classes(user):
             allowed = st.checkbox(m["name"], value=bool(cur.get("allowed", 0)),
                                   key=f"tma_{cls['id']}_{m['id']}")
         with op_col:
-            override = st.text_input("", value=cur.get("override_prompt") or "",
+            override = st.text_input("Class override prompt", value=cur.get("override_prompt") or "",
                                      key=f"tmop_{cls['id']}_{m['id']}",
                                      placeholder="Override / class-level system prompt (optional)",
                                      label_visibility="collapsed")
@@ -1521,7 +1521,7 @@ def _teacher_models(user):
                         allowed = st.checkbox(s["username"], value=bool(cur.get("allowed", 0)),
                                               key=f"sma_{m['id']}_{s['id']}")
                     with op_col:
-                        override = st.text_input("", value=cur.get("override_prompt") or "",
+                        override = st.text_input("Override prompt", value=cur.get("override_prompt") or "",
                                                  key=f"smop_{m['id']}_{s['id']}",
                                                  placeholder="Override prompt",
                                                  label_visibility="collapsed")
