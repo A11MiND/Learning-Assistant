@@ -280,6 +280,14 @@ section[data-testid="stSidebar"] .stRadio div[role="radiogroup"] label:has(input
     background: #ede9fe; color: #5b21b6; font-weight:600;
 }
 section[data-testid="stSidebar"] .stRadio div[role="radiogroup"] input { display:none; }
+section[data-testid="stSidebar"] .stRadio [data-baseweb="radio"],
+section[data-testid="stSidebar"] .stRadio [class*="radio"] svg,
+section[data-testid="stSidebar"] .stRadio [class*="radio"] div[class*="circle"] { display:none !important; }
+section[data-testid="stSidebar"] .stButton button {
+    background: transparent; color: #374151;
+    border: 1px solid #d1d5db; border-radius: 8px; font-size: 0.875rem;
+}
+section[data-testid="stSidebar"] .stButton button:hover { background: #f3f4f6; }
 
 /* ── Main area ──────────────────────────────────────── */
 .main .block-container { padding-top: 1.25rem; padding-bottom: 2rem; max-width: 1200px; }
@@ -680,12 +688,12 @@ def render_admin_dashboard(user):
         nav = st.radio("nav", [
             "👥  Users",
             "🏫  Classes",
-            "�  Models",
+            "🤖  Models",
             "🤝  Teacher-Students",
             "⚙️  System Settings",
         ], label_visibility="collapsed")
         st.divider()
-        if st.button("Logout", use_container_width=True):
+        if st.button("⏻  Logout", use_container_width=True):
             st.session_state.user = None; st.rerun()
 
     if nav == "👥  Users":              _admin_users(user)
@@ -705,10 +713,10 @@ def _admin_users(current_admin):
     # Toolbar
     col_srch, col_filt, col_add = st.columns([3, 1.5, 1])
     with col_srch:
-        search = st.text_input("", placeholder="Search name, username, email…",
+        search = st.text_input("Search users", placeholder="Search name, username, email…",
                                key="user_search", label_visibility="collapsed")
     with col_filt:
-        role_f = st.selectbox("", ["all","admin","teacher","student"],
+        role_f = st.selectbox("Role filter", ["all","admin","teacher","student"],
                               label_visibility="collapsed", key="user_role_filter")
     with col_add:
         if st.button("＋ Add User", use_container_width=True, type="primary"):
@@ -743,20 +751,20 @@ def _admin_users(current_admin):
     st.markdown("<hr style='margin:4px 0 8px;border-color:#e5e7eb'>", unsafe_allow_html=True)
 
     for u in page_users:
-        c0, c1, c2, c3, c4, c_act = st.columns([3, 2.5, 1.2, 1.2, 1.2, 2])
+        c0, c1, c2, c3, c4, c_act = st.columns([3, 2.5, 1.2, 1.2, 1.2, 1.5])
+        status = u.get("account_status", "active")
         with c0:
-            st.markdown(f"**{u['name']}**")
-            st.caption(f"@{u['username']}")
+            st.markdown(f"<div style='line-height:1.35;padding:6px 0'><b>{u['name']}</b> <span style='color:#9ca3af;font-size:0.8rem'>@{u['username']}</span></div>",
+                        unsafe_allow_html=True)
         with c1:
-            st.caption(u.get("email") or "—")
+            st.markdown(f"<div style='padding:6px 0;font-size:0.85rem;color:#6b7280'>{u.get('email') or '—'}</div>", unsafe_allow_html=True)
         with c2:
-            st.markdown(badge(u["role"]), unsafe_allow_html=True)
+            st.markdown(f"<div style='padding:6px 0'>{badge(u['role'])}</div>", unsafe_allow_html=True)
         with c3:
-            status = u.get("account_status", "active")
-            st.markdown(badge(status), unsafe_allow_html=True)
+            st.markdown(f"<div style='padding:6px 0'>{badge(status)}</div>", unsafe_allow_html=True)
         with c4:
             joined = (u.get("created_at") or "")[:10]
-            st.caption(joined or "—")
+            st.markdown(f"<div style='padding:6px 0;font-size:0.8rem;color:#9ca3af'>{joined or '—'}</div>", unsafe_allow_html=True)
         with c_act:
             ba, bb, bc = st.columns(3)
             with ba:
@@ -775,7 +783,7 @@ def _admin_users(current_admin):
                     if st.button("🗑️", key=f"del_{u['id']}", help="Delete"):
                         st.session_state["_del_uid"] = u["id"]
                         dialog_confirm_delete()
-        st.markdown("<hr style='margin:2px 0;border-color:#f1f5f9'>", unsafe_allow_html=True)
+        st.markdown("<hr style='margin:0;border-color:#f1f5f9'>", unsafe_allow_html=True)
 
     # Pagination controls
     if total_pages > 1:
@@ -878,9 +886,31 @@ def _admin_models(current_admin):
 
 def _admin_classes():
     st.markdown("## Class Management")
+
+    teachers = database.get_all_teachers()
+    with st.expander("＋ Create New Class", expanded=False):
+        with st.form("admin_create_class_form"):
+            c_col1, c_col2, c_col3 = st.columns(3)
+            with c_col1:
+                new_cls_name = st.text_input("Class Name *")
+            with c_col2:
+                new_cls_subj = st.text_input("Subject")
+            with c_col3:
+                teacher_opts = {t["id"]: f"{t['name']} (@{t['username']})" for t in teachers}
+                sel_teacher = st.selectbox("Assign to Teacher",
+                                           options=list(teacher_opts.keys()),
+                                           format_func=lambda i: teacher_opts.get(i, str(i)),
+                                           key="admin_new_class_teacher")
+            if st.form_submit_button("Create Class", type="primary", use_container_width=True):
+                if new_cls_name and sel_teacher:
+                    database.create_class(new_cls_name, sel_teacher, subject=new_cls_subj or None)
+                    st.success(f"Class '{new_cls_name}' created!"); st.rerun()
+                else:
+                    st.warning("Class name and teacher required.")
+
     all_classes = database.get_all_classes()
     if not all_classes:
-        st.info("No classes yet. Teachers create classes in their dashboard."); return
+        st.info("No classes yet."); return
 
     for cls in all_classes:
         label = f"**{cls['name']}** — {cls.get('teacher_name','?')} | {cls.get('subject','')}"
@@ -1028,19 +1058,17 @@ def render_teacher_dashboard(user):
         nav = st.radio("nav", [
             "📊  Dashboard",
             "🏫  My Classes",
-            "🤖  Models",
             "📁  Knowledge Base",
             "⚙️  Settings",
         ], label_visibility="collapsed")
         st.divider()
-        if st.button("Logout", use_container_width=True):
+        if st.button("⏻  Logout", use_container_width=True):
             st.session_state.user = None; st.rerun()
 
-    if nav == "📊  Dashboard":      _teacher_analytics(user)
-    elif nav == "🏫  My Classes":   _teacher_classes(user)
-    elif nav == "🤖  Models":       _teacher_models(user)
+    if nav == "📊  Dashboard":        _teacher_analytics(user)
+    elif nav == "🏫  My Classes":     _teacher_classes(user)
     elif nav == "📁  Knowledge Base": _teacher_kb(user)
-    elif nav == "⚙️  Settings":     _render_settings_inline(user)
+    elif nav == "⚙️  Settings":       _render_settings_inline(user)
 
 
 # ── Teacher: Analytics Dashboard ────────────────────────────────────────────
