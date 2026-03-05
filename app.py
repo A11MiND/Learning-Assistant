@@ -280,14 +280,6 @@ section[data-testid="stSidebar"] .stRadio div[role="radiogroup"] label:has(input
     background: #ede9fe; color: #5b21b6; font-weight:600;
 }
 section[data-testid="stSidebar"] .stRadio div[role="radiogroup"] input { display:none; }
-section[data-testid="stSidebar"] .stRadio [data-baseweb="radio"],
-section[data-testid="stSidebar"] .stRadio [class*="radio"] svg,
-section[data-testid="stSidebar"] .stRadio [class*="radio"] div[class*="circle"] { display:none !important; }
-section[data-testid="stSidebar"] .stButton button {
-    background: transparent; color: #374151;
-    border: 1px solid #d1d5db; border-radius: 8px; font-size: 0.875rem;
-}
-section[data-testid="stSidebar"] .stButton button:hover { background: #f3f4f6; }
 
 /* ── Main area ──────────────────────────────────────── */
 .main .block-container { padding-top: 1.25rem; padding-bottom: 2rem; max-width: 1200px; }
