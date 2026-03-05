@@ -4,9 +4,79 @@ import os
 import json
 import csv
 import io
+import re
+import secrets
 from datetime import datetime
 
-DB_FILE = "dse_ai.db"
+# Optional bcrypt (Task 9)
+try:
+    import bcrypt as _bcrypt
+    HAS_BCRYPT = True
+except ImportError:
+    HAS_BCRYPT = False
+
+# Optional Fernet encryption (Task 10)
+try:
+    from cryptography.fernet import Fernet as _Fernet
+    HAS_FERNET = True
+except ImportError:
+    HAS_FERNET = False
+
+# Task 11: configurable DB via environment variable
+_db_url = os.environ.get("DATABASE_URL", "dse_ai.db")
+DB_FILE = _db_url[10:] if _db_url.startswith("sqlite:///") else _db_url
+
+# ---------------------------------------------------------------------------
+# Fernet helpers (Task 10)
+# ---------------------------------------------------------------------------
+
+_FERNET_KEY_FILE = os.path.join("data", "system", ".fernet_key")
+
+
+def _get_fernet():
+    """Return a Fernet instance, or None if unavailable."""
+    if not HAS_FERNET:
+        return None
+    key = os.environ.get("FERNET_KEY")
+    if not key:
+        if os.path.exists(_FERNET_KEY_FILE):
+            with open(_FERNET_KEY_FILE, "rb") as f:
+                key = f.read().strip()
+        else:
+            key = _Fernet.generate_key()
+            os.makedirs(os.path.dirname(_FERNET_KEY_FILE), exist_ok=True)
+            with open(_FERNET_KEY_FILE, "wb") as f:
+                f.write(key)
+    if isinstance(key, str):
+        key = key.encode()
+    try:
+        return _Fernet(key)
+    except Exception:
+        return None
+
+
+def encrypt_api_key(plaintext):
+    """Encrypt API key. Prefix result with 'fernet:' so we can detect it."""
+    if not plaintext:
+        return plaintext
+    f = _get_fernet()
+    if f:
+        return "fernet:" + f.encrypt(plaintext.encode()).decode()
+    return plaintext
+
+
+def decrypt_api_key(stored):
+    """Decrypt API key. Handles both encrypted (fernet:...) and plain strings."""
+    if not stored or not stored.startswith("fernet:"):
+        return stored
+    f = _get_fernet()
+    if f:
+        try:
+            return f.decrypt(stored[7:].encode()).decode()
+        except Exception:
+            return stored
+    return stored
+
 
 # ---------------------------------------------------------------------------
 # Schema & Init
@@ -16,7 +86,7 @@ def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
 
-    c.execute('''
+    c.execute("""
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT UNIQUE NOT NULL,
@@ -29,9 +99,9 @@ def init_db():
             reset_token_expiry TEXT,
             created_at TEXT
         )
-    ''')
+    """)
 
-    c.execute('''
+    c.execute("""
         CREATE TABLE IF NOT EXISTS classes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
@@ -40,9 +110,9 @@ def init_db():
             created_at TEXT,
             FOREIGN KEY(teacher_id) REFERENCES users(id)
         )
-    ''')
+    """)
 
-    c.execute('''
+    c.execute("""
         CREATE TABLE IF NOT EXISTS class_students (
             class_id INTEGER NOT NULL,
             student_id INTEGER NOT NULL,
@@ -50,9 +120,11 @@ def init_db():
             FOREIGN KEY(class_id) REFERENCES classes(id),
             FOREIGN KEY(student_id) REFERENCES users(id)
         )
-    ''')
+    """)
 
-    c.execute('''
+    # is_active: 1 = published (visible to teachers), 0 = draft
+    # managed_by: 'admin' = created in admin hub, 'teacher' = teacher's own model
+    c.execute("""
         CREATE TABLE IF NOT EXISTS models (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT UNIQUE NOT NULL,
@@ -60,13 +132,15 @@ def init_db():
             api_url TEXT NOT NULL,
             api_key TEXT,
             system_prompt TEXT,
+            is_active INTEGER DEFAULT 1,
+            managed_by TEXT DEFAULT 'admin',
             created_by INTEGER,
             created_at TEXT,
             FOREIGN KEY(created_by) REFERENCES users(id)
         )
-    ''')
+    """)
 
-    c.execute('''
+    c.execute("""
         CREATE TABLE IF NOT EXISTS student_model_access (
             user_id INTEGER NOT NULL,
             model_id INTEGER NOT NULL,
@@ -76,9 +150,9 @@ def init_db():
             FOREIGN KEY(user_id) REFERENCES users(id),
             FOREIGN KEY(model_id) REFERENCES models(id)
         )
-    ''')
+    """)
 
-    c.execute('''
+    c.execute("""
         CREATE TABLE IF NOT EXISTS class_model_access (
             class_id INTEGER NOT NULL,
             model_id INTEGER NOT NULL,
@@ -88,9 +162,9 @@ def init_db():
             FOREIGN KEY(class_id) REFERENCES classes(id),
             FOREIGN KEY(model_id) REFERENCES models(id)
         )
-    ''')
+    """)
 
-    c.execute('''
+    c.execute("""
         CREATE TABLE IF NOT EXISTS folders (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
@@ -100,9 +174,9 @@ def init_db():
             FOREIGN KEY(parent_id) REFERENCES folders(id),
             FOREIGN KEY(created_by) REFERENCES users(id)
         )
-    ''')
+    """)
 
-    c.execute('''
+    c.execute("""
         CREATE TABLE IF NOT EXISTS documents (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
@@ -117,9 +191,9 @@ def init_db():
             FOREIGN KEY(folder_id) REFERENCES folders(id),
             FOREIGN KEY(uploaded_by) REFERENCES users(id)
         )
-    ''')
+    """)
 
-    c.execute('''
+    c.execute("""
         CREATE TABLE IF NOT EXISTS model_rag_links (
             model_id INTEGER NOT NULL,
             document_id INTEGER NOT NULL,
@@ -127,9 +201,9 @@ def init_db():
             FOREIGN KEY(model_id) REFERENCES models(id),
             FOREIGN KEY(document_id) REFERENCES documents(id)
         )
-    ''')
+    """)
 
-    c.execute('''
+    c.execute("""
         CREATE TABLE IF NOT EXISTS generated_questions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             document_id INTEGER,
@@ -142,10 +216,9 @@ def init_db():
             FOREIGN KEY(document_id) REFERENCES documents(id),
             FOREIGN KEY(assigned_to) REFERENCES users(id)
         )
-    ''')
+    """)
 
-    # Legacy deployments table (kept for backward compat)
-    c.execute('''
+    c.execute("""
         CREATE TABLE IF NOT EXISTS deployments (
             user_id INTEGER PRIMARY KEY,
             port INTEGER UNIQUE NOT NULL,
@@ -154,9 +227,9 @@ def init_db():
             updated_at TEXT,
             FOREIGN KEY(user_id) REFERENCES users(id)
         )
-    ''')
+    """)
 
-    c.execute('''
+    c.execute("""
         CREATE TABLE IF NOT EXISTS chat_logs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL,
@@ -169,16 +242,24 @@ def init_db():
             FOREIGN KEY(user_id) REFERENCES users(id),
             FOREIGN KEY(model_id) REFERENCES models(id)
         )
-    ''')
+    """)
+
+    # Task 2: Registration auth keys
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS system_keys (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            key_value TEXT UNIQUE NOT NULL,
+            target_role TEXT NOT NULL DEFAULT 'teacher',
+            used_by INTEGER,
+            created_at TEXT,
+            used_at TEXT,
+            FOREIGN KEY(used_by) REFERENCES users(id)
+        )
+    """)
 
     conn.commit()
-
-    # Migrations for existing DBs
     _migrate(c, conn)
-
-    # Seed default accounts
     _seed_accounts(conn, c)
-
     conn.commit()
     conn.close()
 
@@ -191,6 +272,8 @@ def _migrate(c, conn):
         ("users", "reset_token_expiry", "ALTER TABLE users ADD COLUMN reset_token_expiry TEXT"),
         ("models", "model_name", "ALTER TABLE models ADD COLUMN model_name TEXT NOT NULL DEFAULT ''"),
         ("models", "created_by", "ALTER TABLE models ADD COLUMN created_by INTEGER"),
+        ("models", "is_active", "ALTER TABLE models ADD COLUMN is_active INTEGER DEFAULT 1"),
+        ("models", "managed_by", "ALTER TABLE models ADD COLUMN managed_by TEXT DEFAULT 'admin'"),
         ("student_model_access", "override_prompt", "ALTER TABLE student_model_access ADD COLUMN override_prompt TEXT"),
         ("documents", "folder_id", "ALTER TABLE documents ADD COLUMN folder_id INTEGER"),
         ("chat_logs", "token_estimate", "ALTER TABLE chat_logs ADD COLUMN token_estimate INTEGER DEFAULT 0"),
@@ -224,11 +307,23 @@ def _seed_accounts(conn, c):
 
 
 # ---------------------------------------------------------------------------
-# Password helpers
+# Password helpers (Task 9: bcrypt with SHA-256 fallback + auto-upgrade)
 # ---------------------------------------------------------------------------
 
 def hash_password(password):
+    """Hash password using bcrypt if available, else SHA-256."""
+    if HAS_BCRYPT:
+        return _bcrypt.hashpw(password.encode("utf-8"), _bcrypt.gensalt()).decode("utf-8")
     return hashlib.sha256(password.encode()).hexdigest()
+
+
+def _verify_password(plain, stored):
+    """Verify plain password against stored hash (bcrypt or SHA-256)."""
+    if stored.startswith("$2b$") or stored.startswith("$2a$"):
+        if HAS_BCRYPT:
+            return _bcrypt.checkpw(plain.encode("utf-8"), stored.encode("utf-8"))
+        return False
+    return hashlib.sha256(plain.encode()).hexdigest() == stored
 
 
 # ---------------------------------------------------------------------------
@@ -260,17 +355,27 @@ def create_user(username, password, role, name, email=None):
 
 
 def verify_user(login, password):
-    """login can be username or email."""
+    """Login can be username or email. Auto-upgrades SHA-256 -> bcrypt on success."""
     conn = sqlite3.connect(DB_FILE)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     c.execute(
-        "SELECT * FROM users WHERE (LOWER(username)=? OR LOWER(email)=?) AND password=?",
-        (login.lower(), login.lower(), hash_password(password))
+        "SELECT * FROM users WHERE (LOWER(username)=? OR LOWER(email)=?)",
+        (login.lower(), login.lower())
     )
     user = c.fetchone()
+    if user and _verify_password(password, user["password"]):
+        user_dict = dict(user)
+        # Auto-upgrade SHA-256 -> bcrypt (seamless)
+        if HAS_BCRYPT and not user["password"].startswith("$2"):
+            new_hash = hash_password(password)
+            c.execute("UPDATE users SET password=? WHERE id=?", (new_hash, user["id"]))
+            conn.commit()
+            user_dict["password"] = new_hash
+        conn.close()
+        return user_dict
     conn.close()
-    return dict(user) if user else None
+    return None
 
 
 def get_user_by_id(user_id):
@@ -278,16 +383,16 @@ def get_user_by_id(user_id):
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     c.execute("SELECT * FROM users WHERE id=?", (user_id,))
-    row = c.fetchone()
+    user = c.fetchone()
     conn.close()
-    return dict(row) if row else None
+    return dict(user) if user else None
 
 
 def get_all_users():
     conn = sqlite3.connect(DB_FILE)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
-    c.execute("SELECT id,username,email,name,role,account_status,created_at FROM users ORDER BY role,username")
+    c.execute("SELECT * FROM users ORDER BY role, username")
     rows = c.fetchall()
     conn.close()
     return [dict(r) for r in rows]
@@ -297,7 +402,7 @@ def get_users_by_role(role):
     conn = sqlite3.connect(DB_FILE)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
-    c.execute("SELECT id,username,email,name,role,account_status,created_at FROM users WHERE role=? ORDER BY username", (role,))
+    c.execute("SELECT * FROM users WHERE role=? ORDER BY username", (role,))
     rows = c.fetchall()
     conn.close()
     return [dict(r) for r in rows]
@@ -314,19 +419,25 @@ def get_all_teachers():
 def update_user_profile(user_id, new_username=None, new_password=None, new_name=None, new_email=None):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
+    fields, vals = [], []
+    if new_username:
+        fields.append("username=?"); vals.append(new_username)
+    if new_password:
+        fields.append("password=?"); vals.append(hash_password(new_password))
+    if new_name:
+        fields.append("name=?"); vals.append(new_name)
+    if new_email is not None:
+        fields.append("email=?"); vals.append(new_email or None)
+    if not fields:
+        conn.close()
+        return True, "No changes"
+    vals.append(user_id)
     try:
-        if new_username:
-            c.execute("UPDATE users SET username=? WHERE id=?", (new_username, user_id))
-        if new_password:
-            c.execute("UPDATE users SET password=? WHERE id=?", (hash_password(new_password), user_id))
-        if new_name:
-            c.execute("UPDATE users SET name=? WHERE id=?", (new_name, user_id))
-        if new_email:
-            c.execute("UPDATE users SET email=? WHERE id=?", (new_email, user_id))
+        c.execute(f"UPDATE users SET {', '.join(fields)} WHERE id=?", tuple(vals))
         conn.commit()
-        return True, "Updated"
-    except sqlite3.IntegrityError:
-        return False, "Username or email already taken"
+        return True, "OK"
+    except sqlite3.IntegrityError as e:
+        return False, str(e)
     finally:
         conn.close()
 
@@ -334,18 +445,21 @@ def update_user_profile(user_id, new_username=None, new_password=None, new_name=
 def admin_update_user(user_id, name, username, email=None, password=None, role=None):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
+    fields = ["name=?", "username=?"]
+    vals = [name, username]
+    if email is not None:
+        fields.append("email=?"); vals.append(email)
+    if password:
+        fields.append("password=?"); vals.append(hash_password(password))
+    if role:
+        fields.append("role=?"); vals.append(role)
+    vals.append(user_id)
     try:
-        c.execute("UPDATE users SET name=?, username=? WHERE id=?", (name, username, user_id))
-        if email is not None:
-            c.execute("UPDATE users SET email=? WHERE id=?", (email, user_id))
-        if password:
-            c.execute("UPDATE users SET password=? WHERE id=?", (hash_password(password), user_id))
-        if role:
-            c.execute("UPDATE users SET role=? WHERE id=?", (role, user_id))
+        c.execute(f"UPDATE users SET {', '.join(fields)} WHERE id=?", tuple(vals))
         conn.commit()
-        return True, "Updated"
-    except sqlite3.IntegrityError:
-        return False, "Username or email already taken"
+        return True, "OK"
+    except sqlite3.IntegrityError as e:
+        return False, str(e)
     finally:
         conn.close()
 
@@ -359,47 +473,37 @@ def update_user_status(user_id, status):
 
 
 def delete_user(user_id):
-    user = get_user_by_id(user_id)
-    if user:
-        username = user["username"]
-        user_dir = os.path.join("data", username)
-        if os.path.exists(user_dir):
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            try:
-                os.rename(user_dir, os.path.join("data", f"deleted_{ts}_{username}"))
-            except OSError:
-                pass
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
+    for tbl in ("student_model_access", "class_students", "chat_logs"):
+        c.execute(f"DELETE FROM {tbl} WHERE user_id=?", (user_id,))
+    c.execute("DELETE FROM generated_questions WHERE assigned_to=?", (user_id,))
     c.execute("DELETE FROM users WHERE id=?", (user_id,))
-    c.execute("DELETE FROM class_students WHERE student_id=?", (user_id,))
-    c.execute("DELETE FROM student_model_access WHERE user_id=?", (user_id,))
     conn.commit()
     conn.close()
 
 
 def import_students_from_csv(csv_text):
-    """
-    Parse CSV with columns: username,email,name,password
-    Returns (success_count, errors list).
-    """
-    reader = csv.DictReader(io.StringIO(csv_text))
-    ok = 0
+    """Parse CSV 'username,email,name,password' and bulk-create students."""
+    reader = csv.reader(io.StringIO(csv_text))
+    ok_count = 0
     errors = []
-    for i, row in enumerate(reader, start=2):
-        username = (row.get("username") or "").strip()
-        email = (row.get("email") or "").strip()
-        name = (row.get("name") or "").strip()
-        password = (row.get("password") or "").strip()
-        if not username or not password:
-            errors.append(f"Row {i}: username and password are required")
+    for i, row in enumerate(reader, 1):
+        row = [c.strip() for c in row]
+        if not row or (len(row) == 1 and not row[0]):
             continue
-        success, msg = create_user(username, password, "student", name or username, email or None)
-        if success:
-            ok += 1
+        if row[0].lower() in ("username", "user"):
+            continue  # header
+        if len(row) < 4:
+            errors.append(f"Row {i}: expected 4 columns, got {len(row)}: {row}")
+            continue
+        username, email, name, password = row[0], row[1], row[2], row[3]
+        ok, msg = create_user(username, password, "student", name or username, email=email or None)
+        if ok:
+            ok_count += 1
         else:
             errors.append(f"Row {i} ({username}): {msg}")
-    return ok, errors
+    return ok_count, errors
 
 
 # ---------------------------------------------------------------------------
@@ -413,10 +517,10 @@ def create_class(name, teacher_id, subject=None):
         "INSERT INTO classes (name, subject, teacher_id, created_at) VALUES (?,?,?,?)",
         (name, subject, teacher_id, datetime.now().isoformat())
     )
-    cid = c.lastrowid
+    class_id = c.lastrowid
     conn.commit()
     conn.close()
-    return cid
+    return class_id
 
 
 def get_classes_for_teacher(teacher_id):
@@ -433,11 +537,10 @@ def get_all_classes():
     conn = sqlite3.connect(DB_FILE)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
-    c.execute("""
-        SELECT cl.*, u.name as teacher_name, u.username as teacher_username
-        FROM classes cl LEFT JOIN users u ON cl.teacher_id = u.id
-        ORDER BY u.username, cl.name
-    """)
+    c.execute(
+        "SELECT c.*, u.name as teacher_name FROM classes c "
+        "LEFT JOIN users u ON c.teacher_id=u.id ORDER BY c.name"
+    )
     rows = c.fetchall()
     conn.close()
     return [dict(r) for r in rows]
@@ -457,8 +560,8 @@ def update_class(class_id, name=None, subject=None):
 def delete_class(class_id):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute("DELETE FROM class_students WHERE class_id=?", (class_id,))
-    c.execute("DELETE FROM class_model_access WHERE class_id=?", (class_id,))
+    for tbl in ("class_students", "class_model_access"):
+        c.execute(f"DELETE FROM {tbl} WHERE class_id=?", (class_id,))
     c.execute("DELETE FROM classes WHERE id=?", (class_id,))
     conn.commit()
     conn.close()
@@ -467,12 +570,14 @@ def delete_class(class_id):
 def add_student_to_class(class_id, student_id):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute(
-        "INSERT OR IGNORE INTO class_students (class_id, student_id) VALUES (?,?)",
-        (class_id, student_id)
-    )
-    conn.commit()
-    conn.close()
+    try:
+        c.execute(
+            "INSERT OR IGNORE INTO class_students (class_id, student_id) VALUES (?,?)",
+            (class_id, student_id)
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def remove_student_from_class(class_id, student_id):
@@ -488,8 +593,8 @@ def get_students_in_class(class_id):
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     c.execute(
-        "SELECT u.id,u.username,u.email,u.name,u.account_status FROM users u "
-        "JOIN class_students cs ON u.id=cs.student_id WHERE cs.class_id=? ORDER BY u.name",
+        "SELECT u.* FROM users u JOIN class_students cs ON u.id=cs.student_id "
+        "WHERE cs.class_id=? ORDER BY u.username",
         (class_id,)
     )
     rows = c.fetchall()
@@ -502,8 +607,9 @@ def get_classes_for_student(student_id):
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     c.execute(
-        "SELECT cl.* FROM classes cl JOIN class_students cs ON cl.id=cs.class_id "
-        "WHERE cs.student_id=?", (student_id,)
+        "SELECT c.* FROM classes c JOIN class_students cs ON c.id=cs.class_id "
+        "WHERE cs.student_id=? ORDER BY c.name",
+        (student_id,)
     )
     rows = c.fetchall()
     conn.close()
@@ -511,17 +617,19 @@ def get_classes_for_student(student_id):
 
 
 # ---------------------------------------------------------------------------
-# Model CRUD
+# Model CRUD (Task 4: Model Hub + Task 10: Fernet encryption)
 # ---------------------------------------------------------------------------
 
-def create_model(name, model_name, api_url, api_key=None, system_prompt=None, created_by=None):
+def create_model(name, model_name, api_url, api_key=None, system_prompt=None,
+                 created_by=None, is_active=1, managed_by="admin"):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     try:
         c.execute(
-            "INSERT INTO models (name, model_name, api_url, api_key, system_prompt, created_by, created_at) "
-            "VALUES (?,?,?,?,?,?,?)",
-            (name, model_name, api_url, api_key, system_prompt, created_by, datetime.now().isoformat())
+            "INSERT INTO models (name, model_name, api_url, api_key, system_prompt, "
+            "is_active, managed_by, created_by, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            (name, model_name, api_url, encrypt_api_key(api_key), system_prompt,
+             is_active, managed_by, created_by, datetime.now().isoformat())
         )
         conn.commit()
         return True
@@ -531,28 +639,50 @@ def create_model(name, model_name, api_url, api_key=None, system_prompt=None, cr
         conn.close()
 
 
-def get_models(created_by=None):
+def get_models(created_by=None, include_inactive=True):
+    """Return all (or filtered) models, with api_key decrypted."""
     conn = sqlite3.connect(DB_FILE)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     if created_by is not None:
-        c.execute("SELECT * FROM models WHERE created_by=? OR created_by IS NULL ORDER BY name", (created_by,))
-    else:
+        c.execute(
+            "SELECT * FROM models WHERE (created_by=? OR created_by IS NULL) ORDER BY name",
+            (created_by,)
+        )
+    elif include_inactive:
         c.execute("SELECT * FROM models ORDER BY name")
+    else:
+        c.execute("SELECT * FROM models WHERE is_active=1 ORDER BY name")
     rows = c.fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+    result = []
+    for r in rows:
+        d = dict(r)
+        d["api_key"] = decrypt_api_key(d.get("api_key"))
+        result.append(d)
+    return result
 
 
-def update_model(model_id, name=None, model_name=None, api_url=None, api_key=None, system_prompt=None):
+def get_published_models():
+    """Models that are is_active=1. Shown to teachers for class/student grants."""
+    return get_models(include_inactive=False)
+
+
+def update_model(model_id, name=None, model_name=None, api_url=None,
+                 api_key=None, system_prompt=None, is_active=None, managed_by=None):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     fields, vals = [], []
-    for col, val in [("name",name),("model_name",model_name),("api_url",api_url),
-                     ("api_key",api_key),("system_prompt",system_prompt)]:
+    for col, val in [("name", name), ("model_name", model_name), ("api_url", api_url),
+                     ("system_prompt", system_prompt)]:
         if val is not None:
-            fields.append(f"{col}=?")
-            vals.append(val)
+            fields.append(f"{col}=?"); vals.append(val)
+    if api_key is not None:
+        fields.append("api_key=?"); vals.append(encrypt_api_key(api_key))
+    if is_active is not None:
+        fields.append("is_active=?"); vals.append(is_active)
+    if managed_by is not None:
+        fields.append("managed_by=?"); vals.append(managed_by)
     if not fields:
         conn.close()
         return
@@ -571,6 +701,89 @@ def delete_model(model_id):
     conn.commit()
     conn.close()
 
+
+# ---------------------------------------------------------------------------
+# System Keys CRUD (Task 2: Registration auth codes)
+# ---------------------------------------------------------------------------
+
+def create_system_key(target_role="teacher"):
+    """Generate a new registration key. Returns the key string."""
+    key = secrets.token_hex(12).upper()
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute(
+        "INSERT INTO system_keys (key_value, target_role, created_at) VALUES (?,?,?)",
+        (key, target_role, datetime.now().isoformat())
+    )
+    conn.commit()
+    conn.close()
+    return key
+
+
+def create_system_keys_bulk(n, target_role="teacher"):
+    """Generate n registration keys at once. Returns list of key strings."""
+    return [create_system_key(target_role) for _ in range(n)]
+
+
+def list_system_keys(used=None):
+    """Return all keys. used=True/False/None to filter."""
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    if used is True:
+        c.execute(
+            "SELECT k.*, u.username as used_by_username FROM system_keys k "
+            "LEFT JOIN users u ON k.used_by=u.id WHERE k.used_by IS NOT NULL "
+            "ORDER BY k.created_at DESC"
+        )
+    elif used is False:
+        c.execute(
+            "SELECT k.*, NULL as used_by_username FROM system_keys k "
+            "WHERE k.used_by IS NULL ORDER BY k.created_at DESC"
+        )
+    else:
+        c.execute(
+            "SELECT k.*, u.username as used_by_username FROM system_keys k "
+            "LEFT JOIN users u ON k.used_by=u.id ORDER BY k.created_at DESC"
+        )
+    rows = c.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def use_system_key(key_value, user_id):
+    """Mark a key as used. Returns (ok, target_role)."""
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    c.execute(
+        "SELECT * FROM system_keys WHERE UPPER(key_value)=? AND used_by IS NULL",
+        (key_value.upper().strip(),)
+    )
+    row = c.fetchone()
+    if not row:
+        conn.close()
+        return False, None
+    c.execute(
+        "UPDATE system_keys SET used_by=?, used_at=? WHERE id=?",
+        (user_id, datetime.now().isoformat(), row["id"])
+    )
+    conn.commit()
+    conn.close()
+    return True, row["target_role"]
+
+
+def delete_system_key(key_id):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("DELETE FROM system_keys WHERE id=?", (key_id,))
+    conn.commit()
+    conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Model Access
+# ---------------------------------------------------------------------------
 
 def set_student_model_access(user_id, model_id, allowed, override_prompt=None):
     conn = sqlite3.connect(DB_FILE)
@@ -597,41 +810,36 @@ def set_class_model_access(class_id, model_id, allowed, override_prompt=None):
 
 
 def get_allowed_models_for_student(user_id):
-    """
-    Returns models granted to this student via:
-    1. Direct student_model_access (allowed=1)
-    2. Class membership in class_model_access (allowed=1)
-    Individual grants take precedence over class grants.
-    """
+    """Union of class grants + direct grants. Returns full model dicts (key decrypted)."""
     conn = sqlite3.connect(DB_FILE)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
-    # Individual direct grants
     c.execute(
-        "SELECT m.*, a.override_prompt FROM models m "
-        "JOIN student_model_access a ON m.id=a.model_id "
-        "WHERE a.user_id=? AND a.allowed=1", (user_id,)
+        "SELECT DISTINCT m.* FROM models m WHERE m.is_active=1 AND m.id IN ("
+        "  SELECT sma.model_id FROM student_model_access sma "
+        "  WHERE sma.user_id=? AND sma.allowed=1 "
+        "  UNION "
+        "  SELECT cma.model_id FROM class_model_access cma "
+        "  JOIN class_students cs ON cma.class_id=cs.class_id "
+        "  WHERE cs.student_id=? AND cma.allowed=1"
+        ") ORDER BY m.name",
+        (user_id, user_id)
     )
-    direct = {r["id"]: dict(r) for r in c.fetchall()}
-    # Class grants
-    c.execute(
-        "SELECT m.*, ca.override_prompt FROM models m "
-        "JOIN class_model_access ca ON m.id=ca.model_id "
-        "JOIN class_students cs ON ca.class_id=cs.class_id "
-        "WHERE cs.student_id=? AND ca.allowed=1", (user_id,)
-    )
-    for r in c.fetchall():
-        if r["id"] not in direct:
-            direct[r["id"]] = dict(r)
+    rows = c.fetchall()
     conn.close()
-    return list(direct.values())
+    result = []
+    for r in rows:
+        d = dict(r)
+        d["api_key"] = decrypt_api_key(d.get("api_key"))
+        result.append(d)
+    return result
 
 
 def get_class_model_access(class_id):
     conn = sqlite3.connect(DB_FILE)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
-    c.execute("SELECT model_id, allowed, override_prompt FROM class_model_access WHERE class_id=?", (class_id,))
+    c.execute("SELECT * FROM class_model_access WHERE class_id=?", (class_id,))
     rows = c.fetchall()
     conn.close()
     return {r["model_id"]: dict(r) for r in rows}
@@ -641,23 +849,25 @@ def get_student_model_access_map(user_id):
     conn = sqlite3.connect(DB_FILE)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
-    c.execute("SELECT model_id, allowed, override_prompt FROM student_model_access WHERE user_id=?", (user_id,))
+    c.execute("SELECT * FROM student_model_access WHERE user_id=?", (user_id,))
     rows = c.fetchall()
     conn.close()
     return {r["model_id"]: dict(r) for r in rows}
 
 
 # ---------------------------------------------------------------------------
-# Model RAG links
+# RAG Links
 # ---------------------------------------------------------------------------
 
 def set_model_rag_links(model_id, doc_ids):
-    """Replace all RAG links for a model with the given doc_id list."""
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute("DELETE FROM model_rag_links WHERE model_id=?", (model_id,))
     for did in doc_ids:
-        c.execute("INSERT OR IGNORE INTO model_rag_links (model_id, document_id) VALUES (?,?)", (model_id, did))
+        c.execute(
+            "INSERT OR IGNORE INTO model_rag_links (model_id, document_id) VALUES (?,?)",
+            (model_id, did)
+        )
     conn.commit()
     conn.close()
 
@@ -667,8 +877,9 @@ def get_rag_docs_for_model(model_id):
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     c.execute(
-        "SELECT d.* FROM documents d JOIN model_rag_links l ON d.id=l.document_id "
-        "WHERE l.model_id=? AND d.index_status='indexed'", (model_id,)
+        "SELECT d.* FROM documents d JOIN model_rag_links mrl ON d.id=mrl.document_id "
+        "WHERE mrl.model_id=? AND d.index_status='indexed'",
+        (model_id,)
     )
     rows = c.fetchall()
     conn.close()
@@ -677,15 +888,16 @@ def get_rag_docs_for_model(model_id):
 
 def get_rag_link_ids_for_model(model_id):
     conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
     c = conn.cursor()
     c.execute("SELECT document_id FROM model_rag_links WHERE model_id=?", (model_id,))
     rows = c.fetchall()
     conn.close()
-    return [r[0] for r in rows]
+    return [r["document_id"] for r in rows]
 
 
 # ---------------------------------------------------------------------------
-# Folder CRUD
+# Folders
 # ---------------------------------------------------------------------------
 
 def create_folder(name, parent_id=None, created_by=None):
@@ -715,7 +927,6 @@ def get_folders(parent_id=None):
 
 
 def get_all_folders():
-    """Return every folder regardless of hierarchy, ordered by name."""
     conn = sqlite3.connect(DB_FILE)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
@@ -726,19 +937,9 @@ def get_all_folders():
 
 
 def delete_folder(folder_id):
-    """Recursively delete folder and move its documents to root (folder_id=NULL)."""
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute("UPDATE documents SET folder_id=NULL WHERE folder_id=?", (folder_id,))
-    # Recursively handle children
-    c.execute("SELECT id FROM folders WHERE parent_id=?", (folder_id,))
-    children = [r[0] for r in c.fetchall()]
-    conn.commit()
-    conn.close()
-    for child in children:
-        delete_folder(child)
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
     c.execute("UPDATE folders SET parent_id=NULL WHERE parent_id=?", (folder_id,))
     c.execute("DELETE FROM folders WHERE id=?", (folder_id,))
     conn.commit()
@@ -746,21 +947,21 @@ def delete_folder(folder_id):
 
 
 # ---------------------------------------------------------------------------
-# Document CRUD
+# Documents
 # ---------------------------------------------------------------------------
 
 def save_document(name, file_path, file_type, subject=None, folder_id=None, uploaded_by=None):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute(
-        "INSERT INTO documents (name, file_path, file_type, subject, folder_id, uploaded_by, created_at) "
-        "VALUES (?,?,?,?,?,?,?)",
+        "INSERT INTO documents (name, file_path, file_type, subject, folder_id, "
+        "index_status, uploaded_by, created_at) VALUES (?,?,?,?,?,'pending',?,?)",
         (name, file_path, file_type, subject, folder_id, uploaded_by, datetime.now().isoformat())
     )
-    doc_id = c.lastrowid
+    did = c.lastrowid
     conn.commit()
     conn.close()
-    return doc_id
+    return did
 
 
 def get_documents(folder_id=None, include_unfoldered=False):
@@ -772,7 +973,7 @@ def get_documents(folder_id=None, include_unfoldered=False):
     elif include_unfoldered:
         c.execute("SELECT * FROM documents WHERE folder_id IS NULL ORDER BY name")
     else:
-        c.execute("SELECT * FROM documents ORDER BY created_at DESC")
+        c.execute("SELECT * FROM documents ORDER BY name")
     rows = c.fetchall()
     conn.close()
     return [dict(r) for r in rows]
@@ -791,7 +992,8 @@ def get_document(doc_id):
 def update_document_index(doc_id, index_path, status="indexed"):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute("UPDATE documents SET index_path=?, index_status=? WHERE id=?", (index_path, status, doc_id))
+    c.execute("UPDATE documents SET index_path=?, index_status=? WHERE id=?",
+              (index_path, status, doc_id))
     conn.commit()
     conn.close()
 
@@ -815,30 +1017,29 @@ def delete_document(doc_id):
 
 
 # ---------------------------------------------------------------------------
-# Questions CRUD
+# Questions
 # ---------------------------------------------------------------------------
 
-def save_generated_question(document_id, question_type, question, options=None, answer=None, assigned_to=None):
+def save_generated_question(document_id, question_type, question,
+                             options=None, answer=None, assigned_to=None):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute(
-        "INSERT INTO generated_questions (document_id, question_type, question, options, answer, assigned_to, created_at) "
-        "VALUES (?,?,?,?,?,?,?)",
+        "INSERT INTO generated_questions (document_id, question_type, question, options, answer, "
+        "assigned_to, created_at) VALUES (?,?,?,?,?,?,?)",
         (document_id, question_type, question,
-         json.dumps(options) if options else None,
-         answer, assigned_to, datetime.now().isoformat())
+         json.dumps(options) if options else None, answer,
+         assigned_to, datetime.now().isoformat())
     )
-    qid = c.lastrowid
     conn.commit()
     conn.close()
-    return qid
 
 
 def get_questions_for_document(doc_id):
     conn = sqlite3.connect(DB_FILE)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
-    c.execute("SELECT * FROM generated_questions WHERE document_id=? ORDER BY created_at", (doc_id,))
+    c.execute("SELECT * FROM generated_questions WHERE document_id=? ORDER BY created_at DESC", (doc_id,))
     rows = c.fetchall()
     conn.close()
     return [_parse_q(dict(r)) for r in rows]
@@ -849,9 +1050,9 @@ def get_questions_for_student(student_id):
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     c.execute(
-        "SELECT q.*,d.name as doc_name FROM generated_questions q "
-        "LEFT JOIN documents d ON q.document_id=d.id "
-        "WHERE q.assigned_to=? OR q.assigned_to IS NULL ORDER BY q.created_at DESC",
+        "SELECT gq.*, d.name as doc_name FROM generated_questions gq "
+        "LEFT JOIN documents d ON gq.document_id=d.id "
+        "WHERE gq.assigned_to=? OR gq.assigned_to IS NULL ORDER BY gq.created_at DESC",
         (student_id,)
     )
     rows = c.fetchall()
@@ -860,7 +1061,7 @@ def get_questions_for_student(student_id):
 
 
 def _parse_q(d):
-    if d.get("options"):
+    if d.get("options") and isinstance(d["options"], str):
         try:
             d["options"] = json.loads(d["options"])
         except Exception:
@@ -877,7 +1078,7 @@ def delete_question(question_id):
 
 
 # ---------------------------------------------------------------------------
-# Legacy deployment helpers (kept for cleanup utilities)
+# Deployments (kept for backward compat)
 # ---------------------------------------------------------------------------
 
 def get_deployment(user_id):
@@ -885,50 +1086,44 @@ def get_deployment(user_id):
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     c.execute("SELECT * FROM deployments WHERE user_id=?", (user_id,))
-    dep = c.fetchone()
+    row = c.fetchone()
     conn.close()
-    return dict(dep) if dep else None
+    return dict(row) if row else None
 
 
 def get_all_active_ports():
     conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
     c = conn.cursor()
     c.execute("SELECT port FROM deployments WHERE status='running'")
-    ports = [r[0] for r in c.fetchall()]
+    rows = c.fetchall()
     conn.close()
-    return ports
+    return [r["port"] for r in rows]
 
 
 def stop_deployment_record(user_id):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute("UPDATE deployments SET status='stopped', pid=NULL WHERE user_id=?", (user_id,))
+    c.execute("UPDATE deployments SET status='stopped', updated_at=? WHERE user_id=?",
+              (datetime.now().isoformat(), user_id))
     conn.commit()
     conn.close()
 
 
 def cleanup_zombies():
+    """Called at startup to mark stale deployments as stopped."""
     conn = sqlite3.connect(DB_FILE)
-    conn.row_factory = sqlite3.Row
     c = conn.cursor()
-    c.execute("SELECT user_id, pid FROM deployments WHERE status='running'")
-    rows = c.fetchall()
+    c.execute("UPDATE deployments SET status='stopped' WHERE status='running'")
+    conn.commit()
     conn.close()
-    for row in rows:
-        pid = row["pid"]
-        if pid:
-            try:
-                os.kill(pid, 0)
-            except OSError:
-                stop_deployment_record(row["user_id"])
 
 
 # ---------------------------------------------------------------------------
-# Chat logging
+# Chat Logs & Analytics
 # ---------------------------------------------------------------------------
 
 def log_message(user_id, session_id, model_id, role, content):
-    """Store a single chat message for analytics."""
     token_estimate = int(len(content.split()) * 1.3)
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -955,14 +1150,12 @@ def get_chat_logs_for_student(user_id, limit=200):
 
 
 def get_chat_logs_for_class(class_id, limit=1000):
-    """Return all logs for students enrolled in a class."""
     conn = sqlite3.connect(DB_FILE)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     c.execute(
-        "SELECT cl.*, u.username FROM chat_logs cl "
-        "JOIN class_students cs ON cl.user_id = cs.student_id "
-        "JOIN users u ON cl.user_id = u.id "
+        "SELECT cl.* FROM chat_logs cl "
+        "JOIN class_students cs ON cl.user_id=cs.student_id "
         "WHERE cs.class_id=? ORDER BY cl.created_at DESC LIMIT ?",
         (class_id, limit)
     )
@@ -972,10 +1165,6 @@ def get_chat_logs_for_class(class_id, limit=1000):
 
 
 def get_analytics_daily_counts(user_ids, days=14):
-    """
-    Returns list of {date, messages, tokens} for the past N days.
-    user_ids: list of ints (filter to these users), or None for all.
-    """
     from datetime import timedelta
     conn = sqlite3.connect(DB_FILE)
     conn.row_factory = sqlite3.Row
@@ -984,17 +1173,18 @@ def get_analytics_daily_counts(user_ids, days=14):
     if user_ids:
         placeholders = ",".join("?" * len(user_ids))
         c.execute(
-            f"SELECT substr(created_at,1,10) as day, COUNT(*) as messages, "
-            f"SUM(token_estimate) as tokens FROM chat_logs "
-            f"WHERE role='user' AND user_id IN ({placeholders}) AND created_at>=? "
-            f"GROUP BY day ORDER BY day",
-            (*user_ids, cutoff)
+            f"SELECT DATE(created_at) as day, COUNT(*) as messages, "
+            f"COALESCE(SUM(token_estimate),0) as tokens "
+            f"FROM chat_logs WHERE role='user' AND user_id IN ({placeholders}) "
+            f"AND created_at >= ? GROUP BY DATE(created_at) ORDER BY day",
+            tuple(user_ids) + (cutoff,)
         )
     else:
         c.execute(
-            "SELECT substr(created_at,1,10) as day, COUNT(*) as messages, "
-            "SUM(token_estimate) as tokens FROM chat_logs "
-            "WHERE role='user' AND created_at>=? GROUP BY day ORDER BY day",
+            "SELECT DATE(created_at) as day, COUNT(*) as messages, "
+            "COALESCE(SUM(token_estimate),0) as tokens "
+            "FROM chat_logs WHERE role='user' AND created_at >= ? "
+            "GROUP BY DATE(created_at) ORDER BY day",
             (cutoff,)
         )
     rows = c.fetchall()
@@ -1003,15 +1193,15 @@ def get_analytics_daily_counts(user_ids, days=14):
 
 
 def get_analytics_per_student(class_id):
-    """Returns [{username, messages, tokens}] for students in a class."""
     conn = sqlite3.connect(DB_FILE)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     c.execute(
-        "SELECT u.username, COUNT(cl.id) as messages, COALESCE(SUM(cl.token_estimate),0) as tokens "
-        "FROM class_students cs "
-        "JOIN users u ON cs.student_id = u.id "
-        "LEFT JOIN chat_logs cl ON cl.user_id = cs.student_id AND cl.role='user' "
+        "SELECT u.username, COUNT(cl.id) as messages, "
+        "COALESCE(SUM(cl.token_estimate),0) as tokens "
+        "FROM users u "
+        "JOIN class_students cs ON u.id=cs.student_id "
+        "LEFT JOIN chat_logs cl ON u.id=cl.user_id AND cl.role='user' "
         "WHERE cs.class_id=? GROUP BY u.id ORDER BY messages DESC",
         (class_id,)
     )
@@ -1021,8 +1211,6 @@ def get_analytics_per_student(class_id):
 
 
 def get_analytics_top_words(user_ids, limit=20):
-    """Returns [(word, count)] top words from student messages."""
-    import re
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     if user_ids:
@@ -1035,21 +1223,20 @@ def get_analytics_top_words(user_ids, limit=20):
         c.execute("SELECT content FROM chat_logs WHERE role='user'")
     rows = c.fetchall()
     conn.close()
-    stop = {"the","a","an","is","it","in","on","at","to","of","and","or","for",
-            "with","this","that","i","my","me","can","you","what","how","why",
-            "do","does","did","be","are","was","were","please","help","have",
-            "has","had","will","would","could","should","if","so","about","from"}
+    stop = {"the", "a", "an", "is", "in", "it", "of", "to", "and", "or", "for", "with",
+            "this", "that", "what", "how", "why", "can", "i", "my", "me", "do", "does",
+            "did", "be", "are", "was", "were", "please", "help", "have", "has", "had",
+            "will", "would", "could", "should", "if", "so", "about", "from", "on", "at",
+            "by", "we", "you", "they", "he", "she", "not", "but", "get"}
     freq = {}
     for (text,) in rows:
         for w in re.findall(r"[a-zA-Z]{3,}", text.lower()):
             if w not in stop:
                 freq[w] = freq.get(w, 0) + 1
-    sorted_words = sorted(freq.items(), key=lambda x: x[1], reverse=True)[:limit]
-    return sorted_words
+    return sorted(freq.items(), key=lambda x: x[1], reverse=True)[:limit]
 
 
 def get_analytics_totals(user_ids):
-    """Returns {total_messages, total_tokens, total_sessions} for given user_ids."""
     conn = sqlite3.connect(DB_FILE)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
@@ -1072,7 +1259,6 @@ def get_analytics_totals(user_ids):
 
 
 def get_sessions_for_student(user_id):
-    """Return distinct sessions with first message preview."""
     conn = sqlite3.connect(DB_FILE)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
@@ -1093,10 +1279,9 @@ def get_sessions_for_student(user_id):
 
 SYSTEM_DIR = os.path.join("data", "system")
 
+
 def save_system_image(name, file_bytes, ext):
-    """Save an uploaded image (bytes) to data/system/{name}.{ext}. Returns path."""
     os.makedirs(SYSTEM_DIR, exist_ok=True)
-    # Remove old files with same name but different ext
     for f in os.listdir(SYSTEM_DIR):
         if f.startswith(name + "."):
             try:
@@ -1110,7 +1295,6 @@ def save_system_image(name, file_bytes, ext):
 
 
 def get_system_image_path(name):
-    """Return path to data/system/{name}.* if it exists, else None."""
     if not os.path.exists(SYSTEM_DIR):
         return None
     for f in os.listdir(SYSTEM_DIR):
@@ -1121,7 +1305,6 @@ def get_system_image_path(name):
 
 
 def get_system_image_b64(name):
-    """Return base64-encoded data URI string for CSS embedding, or None."""
     import base64
     import mimetypes
     path = get_system_image_path(name)

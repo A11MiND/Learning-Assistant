@@ -6,10 +6,64 @@ import uuid
 import socket
 import base64
 import mimetypes
+import re
 from datetime import datetime
 import database
 import rag_utils
 from openai import OpenAI
+
+# Optional Lottie animation (Task 1)
+try:
+    from streamlit_lottie import st_lottie
+    HAS_LOTTIE = True
+except ImportError:
+    HAS_LOTTIE = False
+
+# Minimal Lottie animation for login hero (two counter-rotating rings)
+_LOTTIE_LOGIN = {
+    "v": "5.7.4", "fr": 30, "ip": 0, "op": 90, "w": 400, "h": 400,
+    "nm": "Login Hero", "ddd": 0, "assets": [],
+    "layers": [
+        {
+            "ddd": 0, "ind": 1, "ty": 4, "nm": "Ring 1",
+            "sr": 1, "ks": {
+                "o": {"a": 0, "k": 80},
+                "r": {"a": 1, "k": [{"t": 0, "s": [0], "e": [360], "i": {"x": [0.5], "y": [0.5]}, "o": {"x": [0.5], "y": [0.5]}}]},
+                "p": {"a": 0, "k": [200, 200, 0]},
+                "s": {"a": 0, "k": [100, 100, 100]}
+            },
+            "ao": 0,
+            "shapes": [{
+                "ty": "gr", "nm": "Outer Ring",
+                "it": [
+                    {"ty": "el", "p": {"a": 0, "k": [0, 0]}, "s": {"a": 0, "k": [260, 260]}},
+                    {"ty": "st", "c": {"a": 0, "k": [0.388, 0.4, 0.945, 1]}, "o": {"a": 0, "k": 100},
+                     "w": {"a": 0, "k": 8}, "lc": 2, "lj": 1, "d": [{"n": "d", "nm": "dash", "v": {"a": 0, "k": 30}}, {"n": "g", "nm": "gap", "v": {"a": 0, "k": 10}}]},
+                    {"ty": "tr", "p": {"a": 0, "k": [0, 0]}, "s": {"a": 0, "k": [100, 100]}, "o": {"a": 0, "k": 100}}
+                ]
+            }], "ip": 0, "op": 90, "st": 0, "bm": 0
+        },
+        {
+            "ddd": 0, "ind": 2, "ty": 4, "nm": "Ring 2",
+            "sr": 1, "ks": {
+                "o": {"a": 0, "k": 60},
+                "r": {"a": 1, "k": [{"t": 0, "s": [0], "e": [-360], "i": {"x": [0.5], "y": [0.5]}, "o": {"x": [0.5], "y": [0.5]}}]},
+                "p": {"a": 0, "k": [200, 200, 0]},
+                "s": {"a": 0, "k": [100, 100, 100]}
+            },
+            "ao": 0,
+            "shapes": [{
+                "ty": "gr", "nm": "Inner Ring",
+                "it": [
+                    {"ty": "el", "p": {"a": 0, "k": [0, 0]}, "s": {"a": 0, "k": [160, 160]}},
+                    {"ty": "st", "c": {"a": 0, "k": [0.659, 0.333, 0.969, 1]}, "o": {"a": 0, "k": 100},
+                     "w": {"a": 0, "k": 6}, "lc": 2, "lj": 1, "d": [{"n": "d", "nm": "dash", "v": {"a": 0, "k": 20}}, {"n": "g", "nm": "gap", "v": {"a": 0, "k": 8}}]},
+                    {"ty": "tr", "p": {"a": 0, "k": [0, 0]}, "s": {"a": 0, "k": [100, 100]}, "o": {"a": 0, "k": 100}}
+                ]
+            }], "ip": 0, "op": 90, "st": 0, "bm": 0
+        }
+    ]
+}
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -50,22 +104,84 @@ def save_system_settings(settings):
 # Model API
 # ---------------------------------------------------------------------------
 
-def call_model_api(model, messages):
+def call_model_api(model, messages, image_b64=None):
+    """Non-streaming call. Supports optional image (Task 6)."""
     client = OpenAI(api_key=model.get("api_key") or "not-required", base_url=model["api_url"])
     system_parts = []
     if model.get("system_prompt"): system_parts.append(model["system_prompt"])
     if model.get("override_prompt"): system_parts.append(model["override_prompt"])
     full_msgs = []
     if system_parts: full_msgs.append({"role": "system", "content": "\n\n".join(system_parts)})
-    full_msgs.extend(messages)
+    full_msgs.extend([{"role": m["role"], "content": m["content"]} for m in messages])
+    # Attach image to last user message if provided
+    if image_b64 and full_msgs and full_msgs[-1]["role"] == "user":
+        full_msgs[-1]["content"] = [
+            {"type": "text", "text": full_msgs[-1]["content"]},
+            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image_b64}"}}
+        ]
+    model_name = model.get("model_name") or "gpt-3.5-turbo"
     try:
-        resp = client.chat.completions.create(model=model.get("model_name") or "gpt-3.5-turbo", messages=full_msgs)
+        resp = client.chat.completions.create(model=model_name, messages=full_msgs)
         return resp.choices[0].message.content
     except Exception as e:
+        if image_b64:
+            # Retry without image
+            for m in full_msgs:
+                if isinstance(m.get("content"), list):
+                    m["content"] = next((p["text"] for p in m["content"] if p.get("type") == "text"), "")
+            try:
+                resp = client.chat.completions.create(model=model_name, messages=full_msgs)
+                return resp.choices[0].message.content + "\n\n*(Note: image was not supported by this model)*"
+            except Exception as e2:
+                return f"[Model Error]: {e2}"
         return f"[Model Error]: {e}"
+
+
+def _stream_generator(model, messages, image_b64=None):
+    """Generator yielding text chunks for st.write_stream (Task 8)."""
+    client = OpenAI(api_key=model.get("api_key") or "not-required", base_url=model["api_url"])
+    system_parts = []
+    if model.get("system_prompt"): system_parts.append(model["system_prompt"])
+    if model.get("override_prompt"): system_parts.append(model["override_prompt"])
+    full_msgs = []
+    if system_parts: full_msgs.append({"role": "system", "content": "\n\n".join(system_parts)})
+    full_msgs.extend([{"role": m["role"], "content": m["content"]} for m in messages])
+    if image_b64 and full_msgs and full_msgs[-1]["role"] == "user":
+        full_msgs[-1]["content"] = [
+            {"type": "text", "text": full_msgs[-1]["content"]},
+            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image_b64}"}}
+        ]
+    try:
+        stream = client.chat.completions.create(
+            model=model.get("model_name") or "gpt-3.5-turbo",
+            messages=full_msgs,
+            stream=True
+        )
+        for chunk in stream:
+            if chunk.choices and chunk.choices[0].delta.content:
+                yield chunk.choices[0].delta.content
+    except Exception as e:
+        yield f"[Model Error]: {e}"
+
+
+def _render_think(text):
+    """Render text with <think>...</think> folded into an expander (Task 7)."""
+    match = re.search(r"<think>(.*?)</think>", text, re.DOTALL)
+    if match:
+        think_content = match.group(1).strip()
+        clean = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+        if think_content:
+            with st.expander("💭 Chain of Thought (click to expand)", expanded=False):
+                st.markdown(think_content)
+        st.markdown(clean if clean else "*(No response)*")
+    else:
+        st.markdown(text)
+
 
 def call_model_api_single(model, prompt):
     return call_model_api(model, [{"role": "user", "content": prompt}])
+
+
 
 # ---------------------------------------------------------------------------
 # Student data helpers
@@ -223,6 +339,30 @@ details summary { padding: 0.75rem 1rem !important; font-weight: 500 !important;
 
 /* ── Login page ─────────────────────────────────────── */
 .login-wrap { max-width: 440px; margin: 3rem auto; }
+
+/* ── Class cards (Task 3) ───────────────────────────── */
+.class-card {
+    background: #fff; border: 1px solid #e5e7eb; border-radius: 14px;
+    padding: 1.25rem 1.4rem; margin-bottom: 8px;
+    box-shadow: 0 1px 4px rgba(0,0,0,.06); cursor: pointer;
+    transition: box-shadow 0.18s, transform 0.12s;
+}
+.class-card:hover { box-shadow: 0 4px 16px rgba(99,102,241,.15); transform: translateY(-2px); }
+.class-card .cc-title { font-size: 1rem; font-weight: 700; color: #1e1b4b; margin-bottom: 4px; }
+.class-card .cc-sub   { font-size: 0.78rem; color: #6b7280; margin-bottom: 8px; }
+.class-card .cc-meta  { display:flex; gap: 12px; }
+.class-card .cc-chip  { font-size: 0.72rem; background: #f3f4f6; color: #374151;
+    border-radius: 6px; padding: 2px 8px; font-weight: 500; }
+
+/* ── Login hero panel ────────────────────────────────── */
+.login-hero {
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    height:100%; min-height: 380px;
+    background: linear-gradient(135deg, #6366f1 0%, #a855f7 100%);
+    border-radius: 18px; padding: 2rem; color: #fff; text-align: center;
+}
+.login-hero h2 { font-size: 1.6rem; font-weight: 700; margin: 0.5rem 0 0.25rem; }
+.login-hero p  { font-size: 0.9rem; opacity: 0.85; }
 </style>
 """
 
@@ -404,7 +544,7 @@ def _render_settings_form(user):
             st.error("All fields required.")
         elif new_pwd != new_pwd2:
             st.error("New passwords do not match.")
-        elif database.hash_password(cur_pwd) != user["password"]:
+        elif not database.verify_user(user["username"], cur_pwd):
             st.error("Current password is incorrect.")
         else:
             ok, msg = database.update_user_profile(user["id"], new_password=new_pwd)
@@ -436,55 +576,94 @@ def _render_settings_form(user):
 
 def render_login():
     school = sys_settings.get("school_name", "AI Tutor Platform")
-    st.markdown('<div class="login-wrap">', unsafe_allow_html=True)
-    # Logo
-    _logo = database.get_system_image_path("logo")
-    if _logo:
-        st.image(_logo, width=80)
-    elif sys_settings.get("logo_url"):
-        st.image(sys_settings["logo_url"], width=80)
-    st.markdown(f"## {school}")
-    tab_login, tab_register = st.tabs(["Sign In", "Register"])
-    with tab_login:
-        with st.form("login_form"):
-            login_id = st.text_input("Username or Email")
-            pwd = st.text_input("Password", type="password")
-            submitted = st.form_submit_button("Sign In", use_container_width=True, type="primary")
-        if submitted:
-            user = database.verify_user(login_id, pwd)
-            if user:
-                if user.get("account_status") == "banned":
-                    st.error("Your account has been suspended. Contact admin.")
+    col_form, col_hero = st.columns([1, 1], gap="large")
+
+    with col_form:
+        # Logo
+        _logo = database.get_system_image_path("logo")
+        if _logo:
+            st.image(_logo, width=70)
+        elif sys_settings.get("logo_url"):
+            st.image(sys_settings["logo_url"], width=70)
+        st.markdown(f"## {school}")
+
+        tab_login, tab_register = st.tabs(["Sign In", "Register"])
+
+        with tab_login:
+            with st.form("login_form"):
+                login_id = st.text_input("Username or Email")
+                pwd = st.text_input("Password", type="password")
+                submitted = st.form_submit_button("Sign In", use_container_width=True, type="primary")
+            if submitted:
+                user = database.verify_user(login_id, pwd)
+                if user:
+                    if user.get("account_status") == "banned":
+                        st.error("Your account has been suspended. Contact admin.")
+                    else:
+                        st.session_state.user = user
+                        st.rerun()
                 else:
-                    st.session_state.user = user
-                    st.rerun()
-            else:
-                st.error("Incorrect username/email or password.")
-        st.caption("Forgot password? Contact your teacher or admin.")
-    with tab_register:
-        st.caption("Create a student account.")
-        with st.form("reg_form"):
-            c1, c2 = st.columns(2)
-            with c1:
-                r_user = st.text_input("Username *")
-                r_name = st.text_input("Full Name")
-            with c2:
-                r_email = st.text_input("Email")
-                r_pwd = st.text_input("Password *", type="password")
-            r_pwd2 = st.text_input("Confirm Password", type="password")
-            r_sub = st.form_submit_button("Create Account", use_container_width=True, type="primary")
-        if r_sub:
-            if not r_user or not r_pwd:
-                st.error("Username and password required.")
-            elif r_pwd != r_pwd2:
-                st.error("Passwords do not match.")
-            else:
-                ok, msg = database.create_user(r_user.strip(), r_pwd, "student",
-                                               r_name.strip() or r_user.strip(),
-                                               email=r_email.strip() or None)
-                if ok: st.success("Account created! You can now sign in.")
-                else: st.error(f"Registration failed: {msg}")
-    st.markdown("</div>", unsafe_allow_html=True)
+                    st.error("Incorrect username/email or password.")
+            st.caption("Forgot password? Contact your teacher or admin.")
+
+        with tab_register:
+            st.caption("Create a new account. Teachers need an invitation code.")
+            with st.form("reg_form"):
+                c1, c2 = st.columns(2)
+                with c1:
+                    r_user = st.text_input("Username *")
+                    r_name = st.text_input("Full Name")
+                with c2:
+                    r_email = st.text_input("Email")
+                    r_pwd = st.text_input("Password *", type="password")
+                r_pwd2 = st.text_input("Confirm Password", type="password")
+                r_role = st.selectbox("Account Type", ["student", "teacher"])
+                r_code = st.text_input(
+                    "Invitation Code (required for teacher)",
+                    placeholder="e.g. A1B2C3D4E5F6",
+                    help="Leave blank if registering as a student"
+                )
+                r_sub = st.form_submit_button("Create Account", use_container_width=True, type="primary")
+            if r_sub:
+                if not r_user or not r_pwd:
+                    st.error("Username and password required.")
+                elif r_pwd != r_pwd2:
+                    st.error("Passwords do not match.")
+                elif r_role == "teacher" and not r_code.strip():
+                    st.error("An invitation code is required to register as a teacher.")
+                else:
+                    ok, msg = database.create_user(
+                        r_user.strip(), r_pwd, r_role,
+                        r_name.strip() or r_user.strip(),
+                        email=r_email.strip() or None
+                    )
+                    if ok:
+                        # Consume auth code for teacher
+                        if r_role == "teacher":
+                            new_user = database.verify_user(r_user.strip(), r_pwd)
+                            if new_user:
+                                used, target = database.use_system_key(r_code.strip(), new_user["id"])
+                                if not used:
+                                    # Rollback: delete the just-created user
+                                    database.delete_user(new_user["id"])
+                                    st.error("Invalid or already-used invitation code. Account not created.")
+                                    return
+                        st.success("Account created! You can now sign in.")
+                    else:
+                        st.error(f"Registration failed: {msg}")
+
+    with col_hero:
+        if HAS_LOTTIE:
+            st_lottie(_LOTTIE_LOGIN, height=340, key="login_lottie")
+        else:
+            st.markdown(
+                f"""<div class="login-hero">
+                    <div style="font-size:3rem">🎓</div>
+                    <h2>{school}</h2>
+                    <p>AI-powered learning platform for<br>students and teachers.</p>
+                </div>""",
+                unsafe_allow_html=True
+            )
 
 
 # ===========================================================================
@@ -501,6 +680,7 @@ def render_admin_dashboard(user):
         nav = st.radio("nav", [
             "👥  Users",
             "🏫  Classes",
+            "�  Models",
             "🤝  Teacher-Students",
             "⚙️  System Settings",
         ], label_visibility="collapsed")
@@ -508,8 +688,9 @@ def render_admin_dashboard(user):
         if st.button("Logout", use_container_width=True):
             st.session_state.user = None; st.rerun()
 
-    if nav == "👥  Users":       _admin_users(user)
-    elif nav == "🏫  Classes":   _admin_classes()
+    if nav == "👥  Users":              _admin_users(user)
+    elif nav == "🏫  Classes":          _admin_classes()
+    elif nav == "🤖  Models":           _admin_models(user)
     elif nav == "🤝  Teacher-Students": _admin_teacher_students()
     elif nav == "⚙️  System Settings":  _admin_system_settings()
 
@@ -608,6 +789,89 @@ def _admin_users(current_admin):
         with p3:
             if st.button("Next →", disabled=page >= total_pages - 1):
                 st.session_state.user_page = min(total_pages - 1, page + 1); st.rerun()
+
+
+# ── Admin: Model Hub ────────────────────────────────────────────────────────
+
+def _admin_models(current_admin):
+    """Admin Model Hub: centralized model management (Task 4)."""
+    st.markdown("## Model Hub")
+    all_models = database.get_models()
+
+    with st.expander("＋ Add New Model", expanded=not all_models):
+        with st.form("admin_add_model_form"):
+            c1, c2 = st.columns(2)
+            with c1:
+                m_name = st.text_input("Display Name *")
+                m_model_name = st.text_input("Model Name (e.g. llama3, gpt-4o)")
+                m_url = st.text_input("API Base URL", value=DEFAULT_OLLAMA_URL)
+            with c2:
+                m_key = st.text_input("API Key (if required)", type="password")
+                m_prompt = st.text_area("System Prompt (optional)")
+                m_active = st.checkbox("Visible to teachers (published)", value=True)
+            if st.form_submit_button("Add Model", use_container_width=True, type="primary"):
+                if m_name and m_url:
+                    ok = database.create_model(
+                        m_name, m_model_name or "", m_url,
+                        m_key or None, m_prompt or None,
+                        created_by=current_admin["id"],
+                        is_active=1 if m_active else 0,
+                        managed_by="admin"
+                    )
+                    if ok: st.success("Model added!"); st.rerun()
+                    else: st.error("Model name already exists.")
+                else:
+                    st.warning("Display name and API URL required.")
+
+    if not all_models:
+        st.info("No models yet. Add one above."); return
+
+    for m in all_models:
+        status_badge = "🟢" if m.get("is_active", 1) else "🔴"
+        label = f"{status_badge} **{m['name']}** — `{m.get('model_name') or '?'}` | {m['api_url']}"
+        with st.expander(label, expanded=False):
+            c1, c2 = st.columns(2)
+            with c1:
+                n_name = st.text_input("Display Name", m["name"], key=f"amn_{m['id']}")
+                n_mn   = st.text_input("Model Name",   m.get("model_name",""), key=f"ammn_{m['id']}")
+                n_url  = st.text_input("API URL",       m["api_url"],          key=f"amu_{m['id']}")
+            with c2:
+                n_key    = st.text_input("API Key", m.get("api_key") or "",
+                                         type="password", key=f"amk_{m['id']}")
+                n_prompt = st.text_area("System Prompt", m.get("system_prompt") or "",
+                                        key=f"amp_{m['id']}")
+                n_active = st.checkbox("Published (visible to teachers)",
+                                       value=bool(m.get("is_active", 1)),
+                                       key=f"amact_{m['id']}")
+
+            test_col, save_col, del_col = st.columns([1.5, 1.5, 1])
+            with test_col:
+                if st.button("🔌 Test Connection", key=f"amtest_{m['id']}"):
+                    with st.spinner("Testing…"):
+                        try:
+                            _c = OpenAI(api_key=n_key or "not-required", base_url=n_url)
+                            _c.models.list()
+                            st.toast("✅ Connection successful!", icon="✅")
+                        except Exception:
+                            try:
+                                _c2 = OpenAI(api_key=n_key or "not-required", base_url=n_url)
+                                _c2.chat.completions.create(
+                                    model=n_mn or "gpt-3.5-turbo",
+                                    messages=[{"role": "user", "content": "ping"}],
+                                    max_tokens=1
+                                )
+                                st.toast("✅ Connection ok (chat)!", icon="✅")
+                            except Exception as e2:
+                                st.toast(f"❌ Failed: {e2}", icon="❌")
+            with save_col:
+                if st.button("💾 Save", key=f"amsave_{m['id']}", type="primary"):
+                    database.update_model(m["id"], n_name, n_mn, n_url,
+                                          n_key or None, n_prompt or None,
+                                          is_active=1 if n_active else 0)
+                    st.success("Saved"); st.rerun()
+            with del_col:
+                if st.button("🗑️ Delete", key=f"amdel_{m['id']}"):
+                    database.delete_model(m["id"]); st.rerun()
 
 
 # ── Admin: Class Management ─────────────────────────────────────────────────
@@ -711,6 +975,43 @@ def _admin_system_settings():
     _bg = database.get_system_image_path("bg")
     if _bg:
         st.markdown("**Current Background:**"); st.image(_bg, width=300)
+
+    # ── Invitation Keys (Task 2) ──────────────────────────────────────────
+    st.divider()
+    st.markdown("## Invitation Keys")
+    st.caption("Generate single-use codes that let people register as **teachers** (or admin).")
+
+    k_col, n_col, r_col = st.columns([2, 1, 1.5])
+    with n_col:
+        n_keys = st.number_input("How many keys", min_value=1, max_value=50, value=5, step=1)
+    with r_col:
+        key_role = st.selectbox("Role", ["teacher", "admin"], key="gen_key_role")
+    with k_col:
+        if st.button("🔑 Generate Keys", type="primary", use_container_width=True):
+            new_keys = database.create_system_keys_bulk(int(n_keys), target_role=key_role)
+            st.success(f"Generated {len(new_keys)} key(s):")
+            st.code("\n".join(new_keys))
+
+    st.markdown("**Unused Keys**")
+    unused = database.list_system_keys(used=False)
+    if not unused:
+        st.info("No unused keys.")
+    else:
+        for k in unused:
+            kc1, kc2, kc3 = st.columns([3, 1.5, 1])
+            with kc1: st.code(k["key_value"])
+            with kc2: st.caption(f"Role: {k['target_role']} | {(k.get('created_at') or '')[:10]}")
+            with kc3:
+                if st.button("🗑️", key=f"delkey_{k['id']}", help="Delete key"):
+                    database.delete_system_key(k["id"]); st.rerun()
+
+    with st.expander("Used Keys", expanded=False):
+        used_keys = database.list_system_keys(used=True)
+        if not used_keys:
+            st.info("No used keys yet.")
+        else:
+            for k in used_keys:
+                st.caption(f"`{k['key_value']}` → {k.get('used_by_username','?')} | {(k.get('used_at') or '')[:10]}")
 
 
 # ===========================================================================
@@ -944,63 +1245,162 @@ def _teacher_classes(user):
     if not classes:
         st.info("No classes yet. Click **＋ New Class** to get started."); return
 
-    for cls in classes:
-        enrolled_count = len(database.get_students_in_class(cls["id"]))
-        label = f"**{cls['name']}** | {cls.get('subject','')} | {enrolled_count} student(s)"
-        with st.expander(label, expanded=False):
-            c1, c2 = st.columns(2)
-            with c1: n_name = st.text_input("Class Name", cls["name"], key=f"tcln_{cls['id']}")
-            with c2: n_subj = st.text_input("Subject", cls.get("subject") or "", key=f"tcls_{cls['id']}")
-            if st.button("Save", key=f"tclsave_{cls['id']}", type="primary"):
-                database.update_class(cls["id"], name=n_name, subject=n_subj); st.rerun()
+    # ── Card grid (Task 3) ────────────────────────────────────────────────
+    COLS = 3
+    rows = [classes[i:i+COLS] for i in range(0, len(classes), COLS)]
+    for row in rows:
+        grid_cols = st.columns(COLS)
+        for col, cls in zip(grid_cols, row):
+            enrolled_count = len(database.get_students_in_class(cls["id"]))
+            model_count    = len([m for m in all_models])
+            with col:
+                card_html = (
+                    f'<div class="class-card">'
+                    f'<div class="cc-title">{cls["name"]}</div>'
+                    f'<div class="cc-sub">{cls.get("subject") or "No subject"}</div>'
+                    f'<div class="cc-meta">'
+                    f'<span class="cc-chip">👤 {enrolled_count} students</span>'
+                    f'<span class="cc-chip">🤖 {model_count} models</span>'
+                    f'</div></div>'
+                )
+                st.markdown(card_html, unsafe_allow_html=True)
+                if st.button("Manage", key=f"mgb_{cls['id']}", use_container_width=True):
+                    cur = st.session_state.get("_managing_class")
+                    st.session_state["_managing_class"] = None if cur == cls["id"] else cls["id"]
+                    st.rerun()
 
-            st.markdown("**Enrolled Students**")
-            enrolled = database.get_students_in_class(cls["id"])
-            enrolled_ids = {s["id"] for s in enrolled}
-            cols3 = st.columns(3)
-            for i, s in enumerate(all_students):
-                with cols3[i % 3]:
-                    checked = st.checkbox(s["username"], value=s["id"] in enrolled_ids,
-                                          key=f"tcs_{cls['id']}_{s['id']}")
-                    if checked != (s["id"] in enrolled_ids):
-                        if checked: database.add_student_to_class(cls["id"], s["id"])
-                        else: database.remove_student_from_class(cls["id"], s["id"])
-                        st.rerun()
+    # ── Class management panel ────────────────────────────────────────────
+    managing_id = st.session_state.get("_managing_class")
+    if not managing_id:
+        return
 
-            st.markdown("**Model Access for this Class**")
-            cls_access = database.get_class_model_access(cls["id"])
-            for m in all_models:
-                cur = cls_access.get(m["id"], {})
-                ma_col, op_col, sv_col = st.columns([1, 3, 1])
-                with ma_col:
-                    allowed = st.checkbox(m["name"], value=bool(cur.get("allowed", 0)),
-                                          key=f"tma_{cls['id']}_{m['id']}")
-                with op_col:
-                    override = st.text_input("", value=cur.get("override_prompt") or "",
-                                             key=f"tmop_{cls['id']}_{m['id']}",
-                                             placeholder="Override prompt (optional)",
-                                             label_visibility="collapsed")
-                with sv_col:
-                    if st.button("Set", key=f"tmaset_{cls['id']}_{m['id']}"):
-                        database.set_class_model_access(cls["id"], m["id"], allowed, override or None)
-                        st.success("Saved")
+    cls = next((c for c in classes if c["id"] == managing_id), None)
+    if not cls:
+        st.session_state["_managing_class"] = None; return
 
-            st.divider()
-            if st.button("🗑️ Delete Class", key=f"tcldel_{cls['id']}"):
-                database.delete_class(cls["id"]); st.rerun()
+    st.divider()
+    st.markdown(f"### Managing: **{cls['name']}**")
+
+    c1, c2 = st.columns(2)
+    with c1: n_name = st.text_input("Class Name", cls["name"], key=f"tcln_{cls['id']}")
+    with c2: n_subj = st.text_input("Subject", cls.get("subject") or "", key=f"tcls_{cls['id']}")
+    sc1, sc2 = st.columns([1, 5])
+    with sc1:
+        if st.button("Save", key=f"tclsave_{cls['id']}", type="primary"):
+            database.update_class(cls["id"], name=n_name, subject=n_subj); st.rerun()
+
+    st.markdown("**Enrolled Students**")
+    enrolled = database.get_students_in_class(cls["id"])
+    enrolled_ids = {s["id"] for s in enrolled}
+    cols3 = st.columns(3)
+    for i, s in enumerate(all_students):
+        with cols3[i % 3]:
+            checked = st.checkbox(s["username"], value=s["id"] in enrolled_ids,
+                                  key=f"tcs_{cls['id']}_{s['id']}")
+            if checked != (s["id"] in enrolled_ids):
+                if checked: database.add_student_to_class(cls["id"], s["id"])
+                else: database.remove_student_from_class(cls["id"], s["id"])
+                st.rerun()
+
+    st.markdown("**Model Access for this Class**")
+    cls_access = database.get_class_model_access(cls["id"])
+    for m in all_models:
+        cur = cls_access.get(m["id"], {})
+        ma_col, op_col, sv_col = st.columns([1, 3, 1])
+        with ma_col:
+            allowed = st.checkbox(m["name"], value=bool(cur.get("allowed", 0)),
+                                  key=f"tma_{cls['id']}_{m['id']}")
+        with op_col:
+            override = st.text_input("", value=cur.get("override_prompt") or "",
+                                     key=f"tmop_{cls['id']}_{m['id']}",
+                                     placeholder="Override / class-level system prompt (optional)",
+                                     label_visibility="collapsed")
+        with sv_col:
+            if st.button("Set", key=f"tmaset_{cls['id']}_{m['id']}"):
+                database.set_class_model_access(cls["id"], m["id"], allowed, override or None)
+                st.success("Saved")
+        # Task 5: 3-layer prompt preview
+        if allowed:
+            with st.expander(f"👁 Preview merged prompt for {m['name']}", expanded=False):
+                merged = ""
+                if m.get("system_prompt"):
+                    merged += f"**[Layer 1 — Base system prompt]**\n```\n{m['system_prompt']}\n```\n\n"
+                if override:
+                    merged += f"**[Layer 2 — Class override]**\n```\n{override}\n```\n\n"
+                merged += "_Layer 3: student-level override (if set in student access)_"
+                st.markdown(merged)
+
+    st.divider()
+    if st.button("🗑️ Delete Class", key=f"tcldel_{cls['id']}"):
+        database.delete_class(cls["id"])
+        st.session_state["_managing_class"] = None
+        st.rerun()
 
 
 # ── Teacher: Model Management ────────────────────────────────────────────────
 
 def _teacher_models(user):
-    st.markdown("## Model Management")
-    all_models = database.get_models()
+    st.markdown("## Models")
     all_docs = database.get_documents()
     indexed_docs = [d for d in all_docs if d["index_status"] == "indexed"]
     doc_map = {d["id"]: d["name"] for d in indexed_docs}
     all_students = database.get_all_students()
 
-    with st.expander("＋ Add New Model", expanded=not all_models):
+    # ── Section 1: Platform Models (managed by admin) ─────────────────────
+    st.markdown("### Platform Models")
+    st.caption("These models are managed by the admin. Configure which students/classes can access them.")
+    platform_models = database.get_published_models()
+    if not platform_models:
+        st.info("No platform models published yet. Ask your admin to add models in the Model Hub.")
+    else:
+        for m in platform_models:
+            with st.expander(f"**{m['name']}** — `{m.get('model_name') or '?'}`", expanded=False):
+                tab_rag, tab_access = st.tabs(["Knowledge Base Links", "Student Access"])
+                with tab_rag:
+                    if indexed_docs:
+                        cur_links = database.get_rag_link_ids_for_model(m["id"])
+                        linked = st.multiselect(
+                            "Select indexed KB files to link to this model:",
+                            list(doc_map.keys()),
+                            default=[d for d in cur_links if d in doc_map],
+                            format_func=lambda i: doc_map.get(i, str(i)),
+                            key=f"pmrag_{m['id']}"
+                        )
+                        if st.button("Save RAG Links", key=f"pmragsave_{m['id']}", type="primary"):
+                            database.set_model_rag_links(m["id"], linked)
+                            st.success("Links saved")
+                    else:
+                        st.info("No indexed documents yet. Index files in the Knowledge Base tab.")
+
+                with tab_access:
+                    for s in all_students:
+                        access_map = database.get_student_model_access_map(s["id"])
+                        cur = access_map.get(m["id"], {})
+                        a_col, op_col, sv_col = st.columns([1, 3, 1])
+                        with a_col:
+                            allowed = st.checkbox(s["username"], value=bool(cur.get("allowed", 0)),
+                                                  key=f"pmsma_{m['id']}_{s['id']}")
+                        with op_col:
+                            override = st.text_input(
+                                "", value=cur.get("override_prompt") or "",
+                                key=f"pmsmop_{m['id']}_{s['id']}",
+                                placeholder="Student-level override prompt",
+                                label_visibility="collapsed"
+                            )
+                        with sv_col:
+                            if st.button("Set", key=f"pmsmaset_{m['id']}_{s['id']}"):
+                                database.set_student_model_access(s["id"], m["id"], allowed, override or None)
+                                st.success("Set")
+
+    st.divider()
+
+    # ── Section 2: My Models (teacher-created) ────────────────────────────
+    st.markdown("### My Models")
+    st.caption("Models you created and control entirely.")
+    my_models = [m for m in database.get_models()
+                 if m.get("created_by") == user["id"] or m.get("managed_by") == "teacher"]
+
+    with st.expander("＋ Add New Model", expanded=not my_models):
         with st.form("add_model_form"):
             c1, c2 = st.columns(2)
             with c1:
@@ -1012,17 +1412,19 @@ def _teacher_models(user):
                 m_prompt = st.text_area("System Prompt (optional)")
             if st.form_submit_button("Add Model", use_container_width=True, type="primary"):
                 if m_name and m_url:
-                    ok = database.create_model(m_name, m_model_name, m_url,
-                                               m_key or None, m_prompt or None,
-                                               created_by=user["id"])
+                    ok = database.create_model(
+                        m_name, m_model_name or "", m_url,
+                        m_key or None, m_prompt or None,
+                        created_by=user["id"], is_active=1, managed_by="teacher"
+                    )
                     if ok: st.success("Model added!"); st.rerun()
                     else: st.error("Model name already exists.")
                 else: st.warning("Display name and API URL required.")
 
-    if not all_models:
-        st.info("No models yet."); return
+    if not my_models:
+        st.info("No personal models yet."); return
 
-    for m in all_models:
+    for m in my_models:
         with st.expander(f"**{m['name']}** — {m.get('model_name','')} | {m['api_url']}", expanded=False):
             tab_cfg, tab_rag, tab_access = st.tabs(["Configuration", "Knowledge Base Links", "Student Access"])
             with tab_cfg:
@@ -1037,22 +1439,18 @@ def _teacher_models(user):
                     n_prompt = st.text_area("System Prompt", m.get("system_prompt") or "",
                                            key=f"mp_{m['id']}")
 
-                # Test connection
                 test_col, save_col, del_col = st.columns([1.5, 1.5, 1])
                 with test_col:
                     if st.button("🔌 Test Connection", key=f"test_{m['id']}"):
                         with st.spinner("Testing…"):
                             try:
-                                from openai import OpenAI as _OAI
-                                _c = _OAI(api_key=n_key or "not-required", base_url=n_url)
+                                _c = OpenAI(api_key=n_key or "not-required", base_url=n_url)
                                 _c.models.list()
                                 st.toast("✅ Connection successful!", icon="✅")
                             except Exception as e:
                                 err = str(e)
-                                # Try a simple chat completion as fallback
                                 try:
-                                    from openai import OpenAI as _OAI2
-                                    _c2 = _OAI2(api_key=n_key or "not-required", base_url=n_url)
+                                    _c2 = OpenAI(api_key=n_key or "not-required", base_url=n_url)
                                     _c2.chat.completions.create(
                                         model=n_mn or "gpt-3.5-turbo",
                                         messages=[{"role":"user","content":"ping"}],
@@ -1343,6 +1741,11 @@ def render_student_workspace(user):
         user_input = st.chat_input("Ask your AI Tutor…")
 
         if user_input:
+            # Convert uploaded image to base64 for multimodal support
+            img_b64 = None
+            if uploaded_file:
+                img_b64 = base64.b64encode(uploaded_file.getvalue()).decode("utf-8")
+
             with st.chat_message("user"):
                 st.markdown(user_input)
                 if uploaded_file: st.image(uploaded_file, width=300)
@@ -1372,9 +1775,26 @@ def render_student_workspace(user):
                         f"[Question:] {user_input}"
                     )
                 with st.chat_message("assistant"):
-                    with st.spinner("Thinking…"):
-                        response_text = call_model_api(current_model, chat_msgs)
-                    st.markdown(response_text)
+                    placeholder = st.empty()
+                    think_status = st.empty()
+                    full_text = ""
+                    for chunk in _stream_generator(current_model, chat_msgs, image_b64=img_b64):
+                        full_text += chunk
+                        n_open = full_text.count("<think>")
+                        n_close = full_text.count("</think>")
+                        in_think = n_open > n_close
+                        if in_think:
+                            think_status.caption("💭 Thinking…")
+                        else:
+                            think_status.empty()
+                            visible = re.sub(r"<think>.*?</think>", "", full_text, flags=re.DOTALL)
+                            visible = re.sub(r"<think>.*", "", visible, flags=re.DOTALL).strip()
+                            if visible:
+                                placeholder.markdown(visible + "▌")
+                    think_status.empty()
+                    placeholder.empty()
+                    _render_think(full_text)
+                    response_text = re.sub(r"<think>.*?</think>", "", full_text, flags=re.DOTALL).strip()
             else:
                 response_text = "[No model assigned. Ask your teacher to grant access.]"
                 with st.chat_message("assistant"): st.markdown(response_text)
