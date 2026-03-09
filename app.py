@@ -104,9 +104,19 @@ def save_system_settings(settings):
 # Model API
 # ---------------------------------------------------------------------------
 
+def _clean_base_url(url):
+    """Ensure base_url works with the OpenAI client which auto-appends endpoints."""
+    if not url: return url
+    url = url.strip()
+    if url.endswith("/chat/completions"):
+        url = url[:-len("/chat/completions")]
+    elif url.endswith("/models"):
+        url = url[:-len("/models")]
+    return url
+
 def call_model_api(model, messages, image_b64=None):
     """Non-streaming call. Supports optional image (Task 6)."""
-    client = OpenAI(api_key=model.get("api_key") or "not-required", base_url=model["api_url"])
+    client = OpenAI(api_key=model.get("api_key") or "not-required", base_url=_clean_base_url(model["api_url"]))
     system_parts = []
     if model.get("system_prompt"): system_parts.append(model["system_prompt"])
     if model.get("override_prompt"): system_parts.append(model["override_prompt"])
@@ -139,7 +149,7 @@ def call_model_api(model, messages, image_b64=None):
 
 def _stream_generator(model, messages, image_b64=None):
     """Generator yielding text chunks for st.write_stream (Task 8)."""
-    client = OpenAI(api_key=model.get("api_key") or "not-required", base_url=model["api_url"])
+    client = OpenAI(api_key=model.get("api_key") or "not-required", base_url=_clean_base_url(model["api_url"]))
     system_parts = []
     if model.get("system_prompt"): system_parts.append(model["system_prompt"])
     if model.get("override_prompt"): system_parts.append(model["override_prompt"])
@@ -849,12 +859,12 @@ def _admin_models(current_admin):
                 if st.button("🔌 Test Connection", key=f"amtest_{m['id']}"):
                     with st.spinner("Testing…"):
                         try:
-                            _c = OpenAI(api_key=n_key or "not-required", base_url=n_url)
+                            _c = OpenAI(api_key=n_key or "not-required", base_url=_clean_base_url(n_url))
                             _c.models.list()
                             st.toast("✅ Connection successful!", icon="✅")
                         except Exception:
                             try:
-                                _c2 = OpenAI(api_key=n_key or "not-required", base_url=n_url)
+                                _c2 = OpenAI(api_key=n_key or "not-required", base_url=_clean_base_url(n_url))
                                 _c2.chat.completions.create(
                                     model=n_mn or "gpt-3.5-turbo",
                                     messages=[{"role": "user", "content": "ping"}],
@@ -1464,13 +1474,13 @@ def _teacher_models(user):
                     if st.button("🔌 Test Connection", key=f"test_{m['id']}"):
                         with st.spinner("Testing…"):
                             try:
-                                _c = OpenAI(api_key=n_key or "not-required", base_url=n_url)
+                                _c = OpenAI(api_key=n_key or "not-required", base_url=_clean_base_url(n_url))
                                 _c.models.list()
                                 st.toast("✅ Connection successful!", icon="✅")
                             except Exception as e:
                                 err = str(e)
                                 try:
-                                    _c2 = OpenAI(api_key=n_key or "not-required", base_url=n_url)
+                                    _c2 = OpenAI(api_key=n_key or "not-required", base_url=_clean_base_url(n_url))
                                     _c2.chat.completions.create(
                                         model=n_mn or "gpt-3.5-turbo",
                                         messages=[{"role":"user","content":"ping"}],
