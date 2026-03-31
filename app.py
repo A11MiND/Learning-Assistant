@@ -265,6 +265,77 @@ def update_notebook_entry_title(username, entry_id, new_title):
         if e["id"] == entry_id: e["title"] = new_title
     save_notebook(username, nb)
 
+
+def get_student_study_docs_dir(username):
+    return os.path.join(get_user_dir(username), "study_docs")
+
+
+def get_student_study_docs_meta_path(username):
+    return os.path.join(get_student_study_docs_dir(username), "docs.json")
+
+
+def load_student_study_docs(username):
+    path = get_student_study_docs_meta_path(username)
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data if isinstance(data, list) else []
+        except Exception:
+            return []
+    return []
+
+
+def save_student_study_docs(username, docs):
+    docs_dir = get_student_study_docs_dir(username)
+    os.makedirs(docs_dir, exist_ok=True)
+    with open(get_student_study_docs_meta_path(username), "w", encoding="utf-8") as f:
+        json.dump(docs, f, ensure_ascii=False, indent=2)
+
+
+def add_student_study_doc(username, up_file):
+    docs_dir = get_student_study_docs_dir(username)
+    os.makedirs(docs_dir, exist_ok=True)
+    original_name = up_file.name
+    ext = original_name.rsplit(".", 1)[-1].lower() if "." in original_name else "txt"
+    doc_id = str(uuid.uuid4())
+    file_path = os.path.join(docs_dir, f"{doc_id}_{original_name}")
+    with open(file_path, "wb") as f:
+        f.write(up_file.getvalue())
+
+    index = rag_utils.build_page_index(file_path, ext)
+    index_path = os.path.join(docs_dir, f"index_{doc_id}.json")
+    with open(index_path, "w", encoding="utf-8") as f:
+        json.dump(index, f, ensure_ascii=False, indent=2)
+
+    docs = load_student_study_docs(username)
+    docs.append({
+        "id": doc_id,
+        "name": original_name,
+        "file_type": ext,
+        "file_path": file_path,
+        "index_path": index_path,
+        "created_at": datetime.now().isoformat(),
+        "status": "indexed",
+    })
+    save_student_study_docs(username, docs)
+
+
+def delete_student_study_doc(username, doc_id):
+    docs = load_student_study_docs(username)
+    keep = []
+    for d in docs:
+        if d.get("id") == doc_id:
+            for p in (d.get("file_path"), d.get("index_path")):
+                if p and os.path.exists(p):
+                    try:
+                        os.remove(p)
+                    except Exception:
+                        pass
+        else:
+            keep.append(d)
+    save_student_study_docs(username, keep)
+
 # ---------------------------------------------------------------------------
 # CSS + startup
 # ---------------------------------------------------------------------------
@@ -363,6 +434,48 @@ details summary { padding: 0.75rem 1rem !important; font-weight: 500 !important;
 .class-card .cc-meta  { display:flex; gap: 12px; }
 .class-card .cc-chip  { font-size: 0.72rem; background: #f3f4f6; color: #374151;
     border-radius: 6px; padding: 2px 8px; font-weight: 500; }
+
+/* ── Flashcard panel ───────────────────────────────── */
+.flashcard-wrap {
+    border: 1px solid #dbe4ff;
+    border-radius: 16px;
+    padding: 1.1rem 1.2rem;
+    background: linear-gradient(160deg, #f8fbff 0%, #eef3ff 100%);
+    box-shadow: 0 4px 12px rgba(32, 56, 117, 0.08);
+    min-height: 220px;
+}
+.flashcard-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+}
+.flashcard-chip {
+    border: 1px solid #c6d4ff;
+    border-radius: 9999px;
+    padding: 2px 10px;
+    font-size: 0.75rem;
+    color: #334155;
+    background: #ffffff;
+}
+.flashcard-title {
+    font-size: 0.82rem;
+    color: #475569;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+    margin-bottom: 8px;
+}
+.flashcard-body {
+    font-size: 1.06rem;
+    line-height: 1.6;
+    color: #0f172a;
+    white-space: pre-wrap;
+}
+.flashcard-hint {
+    margin-top: 10px;
+    font-size: 0.85rem;
+    color: #475569;
+}
 
 /* ── Login hero panel ────────────────────────────────── */
 .login-hero {
@@ -861,7 +974,7 @@ def _admin_models(current_admin):
                         try:
                             _c = OpenAI(api_key=n_key or "not-required", base_url=_clean_base_url(n_url))
                             _c.models.list()
-                            st.toast("✅ Connection successful!", icon="✅")
+                            st.toast("Connection successful!", icon="✅")
                         except Exception:
                             try:
                                 _c2 = OpenAI(api_key=n_key or "not-required", base_url=_clean_base_url(n_url))
@@ -870,7 +983,7 @@ def _admin_models(current_admin):
                                     messages=[{"role": "user", "content": "ping"}],
                                     max_tokens=1
                                 )
-                                st.toast("✅ Connection ok (chat)!", icon="✅")
+                                st.toast("Connection ok (chat)!", icon="✅")
                             except Exception as e2:
                                 st.toast(f"❌ Failed: {e2}", icon="❌")
             with save_col:
@@ -1079,7 +1192,7 @@ def _teacher_analytics(user):
     try:
         from streamlit_echarts import st_echarts
         has_echarts = True
-    except ImportError:
+    except Exception:
         has_echarts = False
 
     st.markdown("## Class Analytics Dashboard")
@@ -1476,7 +1589,7 @@ def _teacher_models(user):
                             try:
                                 _c = OpenAI(api_key=n_key or "not-required", base_url=_clean_base_url(n_url))
                                 _c.models.list()
-                                st.toast("✅ Connection successful!", icon="✅")
+                                st.toast("Connection successful!", icon="✅")
                             except Exception as e:
                                 err = str(e)
                                 try:
@@ -1486,7 +1599,7 @@ def _teacher_models(user):
                                         messages=[{"role":"user","content":"ping"}],
                                         max_tokens=1
                                     )
-                                    st.toast("✅ Connection successful (chat ok)!", icon="✅")
+                                    st.toast("Connection successful (chat ok)!", icon="✅")
                                 except Exception as e2:
                                     st.toast(f"❌ Connection failed: {e2}", icon="❌")
                 with save_col:
@@ -1681,6 +1794,176 @@ def _render_settings_inline(user):
     _render_settings_form(user)
 
 
+def _parse_json_payload(raw_text, fallback):
+    """Parse model output as JSON, tolerating markdown code fences."""
+    if not raw_text:
+        return fallback
+    text = raw_text.strip()
+    fenced = re.search(r"```(?:json)?\s*(\{.*\}|\[.*\])\s*```", text, flags=re.DOTALL)
+    if fenced:
+        text = fenced.group(1).strip()
+    try:
+        return json.loads(text)
+    except Exception:
+        match = re.search(r"(\{[\s\S]*\}|\[[\s\S]*\])", text)
+        if match:
+            try:
+                return json.loads(match.group(1))
+            except Exception:
+                return fallback
+    return fallback
+
+
+def _build_doc_context(doc, query, top_n=5):
+    if not doc or not doc.get("index_path") or not os.path.exists(doc["index_path"]):
+        return ""
+    return rag_utils.retrieve_context(doc["index_path"], query=query, top_n=top_n)
+
+
+def _generate_quiz_json(model, context, question_count):
+    prompt = (
+        "You are generating a quiz for students. Output JSON only.\n"
+        "Schema: {\"quiz\": [{\"question\": str, \"options\": [str,str,str,str], "
+        "\"answer_index\": int, \"explanation\": str, \"page\": int, \"source_chunk\": str}]}\n"
+        f"Generate exactly {question_count} multiple-choice questions.\n"
+        "Rules: use only the provided context, keep options plausible, answer_index must be 0..3, "
+        "source_chunk must be a short direct quote from context.\n\n"
+        f"Context:\n{context[:6000]}"
+    )
+    raw = call_model_api_single(model, prompt)
+    data = _parse_json_payload(raw, {"quiz": []})
+    if not isinstance(data, dict) or not isinstance(data.get("quiz"), list):
+        return {"quiz": []}
+    return data
+
+
+def _generate_flashcards_json(model, context, card_count):
+    prompt = (
+        "You are generating study flashcards for students. Output JSON only.\n"
+        "Schema: {\"cards\": [{\"front\": str, \"back\": str, \"hint\": str, "
+        "\"page\": int, \"source_chunk\": str}]}\n"
+        f"Generate exactly {card_count} cards.\n"
+        "Rules: use only the provided context, keep front concise, back accurate and short, "
+        "source_chunk must quote evidence from context.\n\n"
+        f"Context:\n{context[:6000]}"
+    )
+    raw = call_model_api_single(model, prompt)
+    data = _parse_json_payload(raw, {"cards": []})
+    if not isinstance(data, dict) or not isinstance(data.get("cards"), list):
+        data = {"cards": []}
+
+    cards = [
+        c for c in data.get("cards", [])
+        if isinstance(c, dict) and c.get("front") and c.get("back")
+    ]
+    if cards:
+        return {"cards": cards[:card_count]}
+
+    # Fallback: synthesize cards from context so user actions always produce output.
+    chunks = [c.strip() for c in (context or "").split("---") if c.strip()]
+    fallback_cards = []
+    for chunk in chunks:
+        page_match = re.search(r"\[Page\s+(\d+)\]", chunk)
+        page_num = int(page_match.group(1)) if page_match else 1
+        clean = re.sub(r"\[Page\s+\d+\]\s*", "", chunk).strip()
+        lines = [ln.strip() for ln in clean.splitlines() if ln.strip()]
+        if not lines:
+            continue
+        front = lines[0][:120]
+        back = " ".join(lines[1:4])[:280] if len(lines) > 1 else lines[0][:280]
+        fallback_cards.append({
+            "front": f"Explain: {front}",
+            "back": back,
+            "hint": "Use the source text to answer in your own words.",
+            "page": page_num,
+            "source_chunk": clean[:240],
+        })
+        if len(fallback_cards) >= card_count:
+            break
+    return {"cards": fallback_cards}
+
+
+def _generate_mindmap_json(model, context):
+    prompt = (
+        "You are generating a student-friendly mind map. Output JSON only.\n"
+        "Schema: {\"title\": str, \"mindmap\": {\"name\": str, \"children\": [node]}}\n"
+        "Node schema: {\"name\": str, \"page\": int, \"source_chunk\": str, \"children\": [node]}\n"
+        "Rules: max depth 3 levels, max 40 nodes total, use only provided context, and include source_chunk in every node.\n\n"
+        f"Context:\n{context[:7000]}"
+    )
+    raw = call_model_api_single(model, prompt)
+    data = _parse_json_payload(raw, {"title": "Mind Map", "mindmap": {"name": "Root", "children": []}})
+    if not isinstance(data, dict) or not isinstance(data.get("mindmap"), dict):
+        return {"title": "Mind Map", "mindmap": {"name": "Root", "children": []}}
+    return data
+
+
+def _collect_mindmap_sources(node, out=None):
+    if out is None:
+        out = []
+    if isinstance(node, dict):
+        quote = (node.get("source_chunk") or "").strip()
+        if quote:
+            out.append({
+                "topic": node.get("name", "Topic"),
+                "page": node.get("page", "?"),
+                "quote": quote
+            })
+        for c in node.get("children", []) or []:
+            _collect_mindmap_sources(c, out)
+    return out
+
+
+def _mindmap_to_graphviz(tree_data):
+    """Convert nested mind map JSON to Graphviz DOT text for frontend rendering."""
+    lines = [
+        "digraph MindMap {",
+        "rankdir=LR;",
+        'node [shape=box, style="rounded,filled", fillcolor="#f8fafc", color="#94a3b8", fontname="Helvetica"];',
+        'edge [color="#94a3b8"];'
+    ]
+
+    counter = {"i": 0}
+
+    def walk(node, parent_id=None):
+        counter["i"] += 1
+        nid = f"n{counter['i']}"
+        label = str(node.get("name", "Topic")).replace('"', "'")
+        lines.append(f'{nid} [label="{label}"];')
+        if parent_id:
+            lines.append(f"{parent_id} -> {nid};")
+        for child in (node.get("children") or []):
+            if isinstance(child, dict):
+                walk(child, nid)
+
+    walk(tree_data if isinstance(tree_data, dict) else {"name": "Root", "children": []})
+    lines.append("}")
+    return "\n".join(lines)
+
+
+def _flashcards_prev(total):
+    idx = int(st.session_state.get("flashcards_idx", 0))
+    st.session_state.flashcards_idx = max(0, idx - 1)
+    st.session_state.flashcards_show_back = False
+
+
+def _flashcards_next(total):
+    idx = int(st.session_state.get("flashcards_idx", 0))
+    st.session_state.flashcards_idx = min(max(total - 1, 0), idx + 1)
+    st.session_state.flashcards_show_back = False
+
+
+def _flashcards_toggle():
+    st.session_state.flashcards_show_back = not bool(st.session_state.get("flashcards_show_back", False))
+
+
+def _flashcards_set_mastery(level):
+    idx = int(st.session_state.get("flashcards_idx", 0))
+    mastery = st.session_state.get("flashcards_mastery", {})
+    mastery[idx] = int(level)
+    st.session_state.flashcards_mastery = mastery
+
+
 # ===========================================================================
 # STUDENT WORKSPACE
 # ===========================================================================
@@ -1750,7 +2033,45 @@ def render_student_workspace(user):
         for m in allowed_models:
             if m["id"] == sel_mid: current_model = m; break
 
-    tab_chat, tab_practice, tab_notebook = st.tabs(["💬 Chat", "📝 Practice", "📓 Notebook"])
+    rag_docs = database.get_rag_docs_for_model(current_model["id"]) if current_model else []
+    indexed_rag_docs = [
+        d for d in rag_docs
+        if d.get("index_path") and os.path.exists(d["index_path"])
+    ]
+
+    student_docs_raw = load_student_study_docs(username)
+    indexed_student_docs = [
+        d for d in student_docs_raw
+        if d.get("status") == "indexed" and d.get("index_path") and os.path.exists(d["index_path"])
+    ]
+    study_docs = indexed_rag_docs + indexed_student_docs
+
+    with st.expander("My Study Documents", expanded=False):
+        st.caption("Upload your own files and use them directly in Mind Map, Flashcards, and Quiz.")
+        stu_up = st.file_uploader("Upload file (PDF, DOCX, TXT)", type=["pdf", "docx", "txt"], key="stu_study_upload")
+        if stu_up and st.button("Upload and Index", type="primary", key="stu_study_upload_btn"):
+            try:
+                with st.spinner("Indexing your document..."):
+                    add_student_study_doc(username, stu_up)
+                st.success("Uploaded and indexed successfully.")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Upload/index failed: {e}")
+
+        if indexed_student_docs:
+            st.markdown("**Your indexed files**")
+            for d in sorted(indexed_student_docs, key=lambda x: x.get("created_at", ""), reverse=True):
+                c1, c2 = st.columns([5, 1])
+                with c1:
+                    st.caption(f"{d.get('name', 'Untitled')} ({d.get('file_type', '')})")
+                with c2:
+                    if st.button("Delete", key=f"stu_del_{d.get('id')}"):
+                        delete_student_study_doc(username, d.get("id"))
+                        st.rerun()
+
+    tab_chat, tab_practice, tab_notebook, tab_mindmap, tab_flashcards, tab_quiz = st.tabs([
+        "💬 Chat", "📝 Practice", "📓 Notebook", "🧠 Mind Map", "🗂 Flashcards", "✍️ Quiz"
+    ])
 
     # ── Chat Tab ──────────────────────────────────────────────────────────────
     with tab_chat:
@@ -1792,8 +2113,7 @@ def render_student_workspace(user):
 
             if current_model:
                 rag_inject = ""
-                rag_docs = database.get_rag_docs_for_model(current_model["id"])
-                for rdoc in rag_docs:
+                for rdoc in indexed_rag_docs:
                     if rdoc.get("index_path") and os.path.exists(rdoc["index_path"]):
                         snippet = rag_utils.retrieve_context(rdoc["index_path"], user_input)
                         if snippet: rag_inject += snippet + "\\n\\n"
@@ -1911,6 +2231,219 @@ def render_student_workspace(user):
                     if st.button("🗑️ Delete", key=f"nbdel_{entry['id']}"):
                         delete_notebook_entry(username, entry["id"]); st.rerun()
         if st.button("Refresh"): st.rerun()
+
+    # ── Mind Map Tab (Frontend Render) ───────────────────────────────────────
+    with tab_mindmap:
+        st.markdown("## Mind Map")
+        st.caption("Generate a structured mind map from your document and render it directly in the app.")
+        if not current_model:
+            st.info("No model available.")
+        elif not study_docs:
+            st.info("No indexed documents available yet. Upload one in 'My Study Documents' or ask teacher to link one.")
+        else:
+            doc_options = {f"{d.get('id')}": d["name"] for d in study_docs}
+            mm_doc_id = st.selectbox("Document", list(doc_options.keys()),
+                                     format_func=lambda i: doc_options[i], key="mm_doc")
+            mm_focus = st.text_input("Focus topic (optional)", value="overview", key="mm_focus")
+            if st.button("Generate Mind Map", type="primary", key="mm_generate"):
+                sel_doc = next((d for d in study_docs if str(d.get("id")) == mm_doc_id), None)
+                context = _build_doc_context(sel_doc, mm_focus or "overview", top_n=6)
+                with st.spinner("Building mind map..."):
+                    st.session_state.mindmap_data = _generate_mindmap_json(current_model, context)
+
+            mm_data = st.session_state.get("mindmap_data")
+            if mm_data and isinstance(mm_data, dict):
+                tree_data = mm_data.get("mindmap") or {"name": "Root", "children": []}
+                title = mm_data.get("title") or "Mind Map"
+                st.markdown(f"### {title}")
+                st.caption("Using built-in graph renderer.")
+                st.graphviz_chart(_mindmap_to_graphviz(tree_data), use_container_width=True)
+
+                refs = _collect_mindmap_sources(tree_data)
+                if refs:
+                    with st.expander("Source Evidence", expanded=False):
+                        for i, ref in enumerate(refs[:30], start=1):
+                            st.markdown(f"**{i}. {ref['topic']}** (p.{ref['page']})")
+                            st.caption(ref["quote"])
+
+    # ── Flashcards Tab (Frontend Render) ─────────────────────────────────────
+    with tab_flashcards:
+        st.markdown("## Flashcards")
+        st.caption("Generate cards from your document and study with front/back interactions.")
+        if not current_model:
+            st.info("No model available.")
+        elif not study_docs:
+            st.info("No indexed documents available yet. Upload one in 'My Study Documents' or ask teacher to link one.")
+        else:
+            doc_options = {f"{d.get('id')}": d["name"] for d in study_docs}
+            fc_doc_id = st.selectbox("Document", list(doc_options.keys()),
+                                     format_func=lambda i: doc_options[i], key="fc_doc")
+            fc_count = st.slider("Card count", min_value=5, max_value=20, value=10, key="fc_count")
+            fc_focus = st.text_input("Focus topic (optional)", value="key concepts", key="fc_focus")
+
+            if st.button("Generate Flashcards", type="primary", key="fc_generate"):
+                sel_doc = next((d for d in study_docs if str(d.get("id")) == fc_doc_id), None)
+                context = _build_doc_context(sel_doc, fc_focus or "key concepts", top_n=6)
+                with st.spinner("Generating flashcards..."):
+                    st.session_state.flashcards_data = _generate_flashcards_json(current_model, context, fc_count)
+                    st.session_state.flashcards_idx = 0
+                    st.session_state.flashcards_show_back = False
+                    st.session_state.flashcards_mastery = {}
+
+            cards = (st.session_state.get("flashcards_data") or {}).get("cards", [])
+            if cards:
+                idx = st.session_state.get("flashcards_idx", 0)
+                idx = max(0, min(idx, len(cards) - 1))
+                st.session_state.flashcards_idx = idx
+                card = cards[idx]
+                show_back = st.session_state.get("flashcards_show_back", False)
+                mastery = st.session_state.get("flashcards_mastery", {}).get(idx)
+                mastery_map = {1: "Not Yet", 2: "Almost", 3: "Mastered"}
+
+                st.markdown(f"### Card {idx + 1} / {len(cards)}")
+                face_title = "Answer" if show_back else "Question"
+                face_text = card.get("back", "") if show_back else card.get("front", "")
+                hint_html = ""
+                if card.get("hint") and not show_back:
+                    hint_html = f'<div class="flashcard-hint">Hint: {card.get("hint")}</div>'
+                mastery_text = mastery_map.get(mastery, "Not rated")
+                st.markdown(
+                    f"""
+                    <div class="flashcard-wrap">
+                      <div class="flashcard-head">
+                        <div class="flashcard-chip">Page {card.get('page', '?')}</div>
+                        <div class="flashcard-chip">{mastery_text}</div>
+                      </div>
+                      <div class="flashcard-title">{face_title}</div>
+                      <div class="flashcard-body">{face_text}</div>
+                      {hint_html}
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+                c_prev, c_flip, c_next = st.columns([1, 1, 1])
+                with c_prev:
+                    st.button(
+                        "Previous",
+                        use_container_width=True,
+                        key="fc_prev",
+                        on_click=_flashcards_prev,
+                        args=(len(cards),),
+                        disabled=(idx <= 0),
+                    )
+                with c_flip:
+                    st.button(
+                        "Show Answer" if not show_back else "Show Question",
+                        use_container_width=True,
+                        key="fc_flip",
+                        on_click=_flashcards_toggle,
+                    )
+                with c_next:
+                    st.button(
+                        "Next",
+                        use_container_width=True,
+                        key="fc_next",
+                        on_click=_flashcards_next,
+                        args=(len(cards),),
+                        disabled=(idx >= len(cards) - 1),
+                    )
+
+                st.markdown("**How well did you know this card?**")
+                m1, m2, m3 = st.columns(3)
+                with m1:
+                    st.button(
+                        "Not Yet",
+                        key="fc_m1",
+                        use_container_width=True,
+                        on_click=_flashcards_set_mastery,
+                        args=(1,),
+                    )
+                with m2:
+                    st.button(
+                        "Almost",
+                        key="fc_m2",
+                        use_container_width=True,
+                        on_click=_flashcards_set_mastery,
+                        args=(2,),
+                    )
+                with m3:
+                    st.button(
+                        "Mastered",
+                        key="fc_m3",
+                        use_container_width=True,
+                        on_click=_flashcards_set_mastery,
+                        args=(3,),
+                    )
+
+                st.caption(
+                    f"Source: page {card.get('page', '?')} | {card.get('source_chunk', '')[:180]}"
+                )
+            elif st.session_state.get("flashcards_data"):
+                st.warning("No cards could be generated from the selected context. Try another document or focus topic.")
+
+    # ── Quiz Tab (Frontend Render) ───────────────────────────────────────────
+    with tab_quiz:
+        st.markdown("## Quiz")
+        st.caption("Generate MCQ questions from your document and answer them directly here.")
+        if not current_model:
+            st.info("No model available.")
+        elif not study_docs:
+            st.info("No indexed documents available yet. Upload one in 'My Study Documents' or ask teacher to link one.")
+        else:
+            doc_options = {f"{d.get('id')}": d["name"] for d in study_docs}
+            qz_doc_id = st.selectbox("Document", list(doc_options.keys()),
+                                     format_func=lambda i: doc_options[i], key="qz_doc")
+            qz_count = st.slider("Question count", min_value=3, max_value=12, value=5, key="qz_count")
+            qz_focus = st.text_input("Focus topic (optional)", value="important concepts", key="qz_focus")
+
+            if st.button("Generate Quiz", type="primary", key="qz_generate"):
+                sel_doc = next((d for d in study_docs if str(d.get("id")) == qz_doc_id), None)
+                context = _build_doc_context(sel_doc, qz_focus or "important concepts", top_n=6)
+                with st.spinner("Generating quiz..."):
+                    st.session_state.quiz_data = _generate_quiz_json(current_model, context, qz_count)
+                    st.session_state.quiz_submitted = False
+
+            quiz_items = (st.session_state.get("quiz_data") or {}).get("quiz", [])
+            if quiz_items:
+                st.markdown("### Answer the questions")
+                for i, item in enumerate(quiz_items, start=1):
+                    st.markdown(f"**Q{i}. {item.get('question', '')}**")
+                    options = item.get("options") if isinstance(item.get("options"), list) else []
+                    if len(options) == 4:
+                        st.radio(
+                            "Choose one",
+                            options,
+                            key=f"quiz_ans_{i}",
+                            index=None,
+                            label_visibility="collapsed"
+                        )
+                    else:
+                        st.warning("Invalid option format for this question.")
+
+                if st.button("Submit Quiz", type="primary", key="quiz_submit"):
+                    st.session_state.quiz_submitted = True
+
+                if st.session_state.get("quiz_submitted"):
+                    score = 0
+                    total = len(quiz_items)
+                    st.markdown("### Results")
+                    for i, item in enumerate(quiz_items, start=1):
+                        options = item.get("options") if isinstance(item.get("options"), list) else []
+                        correct_idx = item.get("answer_index", -1)
+                        selected = st.session_state.get(f"quiz_ans_{i}")
+                        correct = options[correct_idx] if 0 <= correct_idx < len(options) else None
+                        is_ok = selected is not None and selected == correct
+                        if is_ok:
+                            score += 1
+                        with st.expander(f"Q{i} - {'Correct' if is_ok else 'Review'}", expanded=False):
+                            st.markdown(f"**Your answer:** {selected or 'Not answered'}")
+                            st.markdown(f"**Correct answer:** {correct or 'N/A'}")
+                            st.markdown(f"**Explanation:** {item.get('explanation', '')}")
+                            st.caption(
+                                f"Source: page {item.get('page', '?')} | {str(item.get('source_chunk', ''))[:220]}"
+                            )
+                    st.success(f"Score: {score} / {total}")
 
 
 # ===========================================================================
