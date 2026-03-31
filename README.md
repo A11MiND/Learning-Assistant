@@ -1,4 +1,4 @@
-# DSE AI Tutor (Streamlit + AnythingLLM + Ollama)
+# Personal Assiatnt
 
 This platform now supports teacher-managed language models. Teachers can add multiple model endpoints, supply system prompts, and control which students have access to which models. Students see a simple chat UI and a notebook for tracking mistakes.
 
