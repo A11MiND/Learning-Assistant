@@ -46,7 +46,7 @@ def call_model_api_single(model, prompt):
     return call_model_api(model, [{"role": "user", "content": prompt}])
 
 # --- Constants ---
-DATA_DIR = "data"
+DATA_DIR = os.environ.get("DATA_DIR", "data")
 
 def get_local_ip():
     try:
@@ -59,8 +59,8 @@ def get_local_ip():
         return "127.0.0.1"
 
 SERVER_IP = get_local_ip()
-DEFAULT_OLLAMA_URL = f"http://{SERVER_IP}:11434"
-DEFAULT_ANY_LLM_URL = f"http://{SERVER_IP}:3001/api/v1"
+DEFAULT_OLLAMA_URL = os.environ.get("DEFAULT_OLLAMA_URL", f"http://{SERVER_IP}:11434")
+DEFAULT_ANY_LLM_URL = os.environ.get("DEFAULT_API_URL", f"http://{SERVER_IP}:3001/api/v1")
 
 # --- Helper Functions ---
 def get_user_dir(username):

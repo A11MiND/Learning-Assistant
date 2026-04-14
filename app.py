@@ -69,7 +69,7 @@ _LOTTIE_LOGIN = {
 # Constants
 # ---------------------------------------------------------------------------
 
-DATA_DIR = "data"
+DATA_DIR = os.environ.get("DATA_DIR", "data")
 SYSTEM_SETTINGS_FILE = os.path.join(DATA_DIR, "system", "settings.json")
 
 def get_local_ip():
@@ -79,8 +79,8 @@ def get_local_ip():
     except Exception: return "127.0.0.1"
 
 SERVER_IP = get_local_ip()
-DEFAULT_OLLAMA_URL = f"http://{SERVER_IP}:11434/v1"
-DEFAULT_API_URL = f"http://{SERVER_IP}:3001/api/v1"
+DEFAULT_OLLAMA_URL = os.environ.get("DEFAULT_OLLAMA_URL", f"http://{SERVER_IP}:11434/v1")
+DEFAULT_API_URL = os.environ.get("DEFAULT_API_URL", f"http://{SERVER_IP}:3001/api/v1")
 
 # ---------------------------------------------------------------------------
 # System settings

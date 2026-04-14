@@ -25,12 +25,13 @@ except ImportError:
 # Task 11: configurable DB via environment variable
 _db_url = os.environ.get("DATABASE_URL", "dse_ai.db")
 DB_FILE = _db_url[10:] if _db_url.startswith("sqlite:///") else _db_url
+DATA_DIR = os.environ.get("DATA_DIR", "data")
 
 # ---------------------------------------------------------------------------
 # Fernet helpers (Task 10)
 # ---------------------------------------------------------------------------
 
-_FERNET_KEY_FILE = os.path.join("data", "system", ".fernet_key")
+_FERNET_KEY_FILE = os.path.join(DATA_DIR, "system", ".fernet_key")
 
 
 def _get_fernet():

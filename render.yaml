@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: dse-ai-learner
+    env: python
+    plan: starter
+    autoDeploy: true
+    buildCommand: pip install -r requirements.txt
+    startCommand: streamlit run app.py --server.address 0.0.0.0 --server.port $PORT --server.headless true
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.4
+      - key: DATA_DIR
+        value: /var/data/data
+      - key: DATABASE_URL
+        value: sqlite:////var/data/dse_ai.db
+      - key: DEFAULT_OLLAMA_URL
+        sync: false
+      - key: DEFAULT_API_URL
+        sync: false
+    disks:
+      - name: dse-data
+        mountPath: /var/data
+        sizeGB: 5
